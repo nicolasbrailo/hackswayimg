@@ -1,3 +1,7 @@
+build
+hackimg
+sysroot_deps
+
 # Prerequisites
 *.d
 
