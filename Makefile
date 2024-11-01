@@ -30,7 +30,50 @@ CFLAGS= \
        -fdiagnostics-color=always \
 	     -D_FILE_OFFSET_BITS=64 \
 	     -D_POSIX_C_SOURCE=200809 \
-	     -pthread
+	     -pthread \
+
+
+LDFLAGS=\
+				  -L $(SYSROOT)/usr/lib/arm-linux-gnueabihf \
+					-static \
+					-Wl,--as-needed \
+					-Wl,--no-undefined \
+					-Wl,-O1 \
+					-Wl,--start-group \
+					-lrt \
+					-pthread \
+					-ljson-c \
+					-lwebp \
+					-lwebpdemux \
+					-ljpeg \
+	        -lexpat \
+					-lm \
+					-lfreetype \
+					-lfontconfig \
+					-ltiff \
+	        -ldeflate \
+          -ljbig \
+          -llzma \
+					-lzstd \
+          -lbrotlicommon \
+          -lbrotlidec \
+	        -lz \
+          -lLerc \
+					-lstdc++ \
+					-Wl,-Bdynamic \
+					-lpng16 \
+					-lexif \
+					-lwayland-client \
+					-lxkbcommon \
+					-lffi \
+					-Wl,--end-group \
+					-v
+
+# ld: -lpng16 and -lexif fail when static linked, need to see if getting a different package fixes that
+# 	  -wayland-client and lxkbcommon don't have .a packages
+# static linking like this seems to mess up loader, so run with /lib/ld-linux-armhf.so.3 ./hackimg
+
+all: hackimg
 
 build/xdg-shell-protocol.c: /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml 
 	mkdir -p build
@@ -78,25 +121,7 @@ hackimg: \
      build/src/sway.o \
      build/src/ui.o \
      build/src/viewer.o
-	clang $(CFLAGS) -o $@ $^ \
-					-Wl,--as-needed \
-					-Wl,--no-undefined \
-					-Wl,-O1 \
-					-Wl,--start-group \
-					-lrt \
-					-pthread \
-					-lexif \
-					-lfontconfig \
-					-lfreetype \
-					-ljpeg \
-					-ljson-c \
-					-lpng16 \
-					-ltiff \
-					-lwayland-client \
-					-lwebp \
-					-lwebpdemux \
-					-lxkbcommon \
-					-Wl,--end-group
+	clang $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 .PHONY: clean distclean
 
