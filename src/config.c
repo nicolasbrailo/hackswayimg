@@ -25,6 +25,7 @@ static const struct config_default defaults[] = {
     { "general",      "sigusr1",          "reload"                                   },
     { "general",      "sigusr2",          "next_file"                                },
     { "general",      "app_id",           "swayimg"                                  },
+    { "general",      "imgsource",        ""                                         },
 
     { "viewer",       "window",           "#00000000"                                },
     { "viewer",       "transparency",     "grid"                                     },
@@ -143,19 +144,6 @@ static const struct config_default defaults[] = {
     { "keys.gallery", "ScrollDown",       "step_down"                                },
 };
 
-/** Config file location. */
-struct location {
-    const char* prefix;  ///< Environment variable name
-    const char* postfix; ///< Constant postfix
-};
-
-static const struct location config_locations[] = {
-    { "XDG_CONFIG_HOME", "/swayimg/config"         },
-    { "HOME",            "/.config/swayimg/config" },
-    { "XDG_CONFIG_DIRS", "/swayimg/config"         },
-    { NULL,              "/etc/xdg/swayimg/config" }
-};
-
 /**
  * Create key/value entry.
  * @param key,value config param
@@ -192,42 +180,6 @@ static struct config* get_section(struct config* cfg, const char* name)
         }
     }
     return NULL;
-}
-
-/**
- * Expand path from environment variable.
- * @param prefix_env path prefix (var name)
- * @param postfix constant postfix
- * @return allocated buffer with path, caller should free it after use
- */
-static char* expand_path(const char* prefix_env, const char* postfix)
-{
-    char* path;
-    const char* prefix;
-    size_t prefix_len = 0;
-    size_t postfix_len = strlen(postfix);
-
-    if (prefix_env) {
-        const char* delim;
-        prefix = getenv(prefix_env);
-        if (!prefix || !*prefix) {
-            return NULL;
-        }
-        // use only the first directory if prefix is a list
-        delim = strchr(prefix, ':');
-        prefix_len = delim ? (size_t)(delim - prefix) : strlen(prefix);
-    }
-
-    // compose path
-    path = malloc(prefix_len + postfix_len + 1 /* last null*/);
-    if (path) {
-        if (prefix_len) {
-            memcpy(path, prefix, prefix_len);
-        }
-        memcpy(path + prefix_len, postfix, postfix_len + 1 /*last null*/);
-    }
-
-    return path;
 }
 
 /**
@@ -326,7 +278,7 @@ static bool load(const char* path, struct config** cfg)
     return true;
 }
 
-struct config* config_load(void)
+struct config* config_load(const char* path)
 {
     struct config* cfg = NULL;
 
@@ -336,15 +288,9 @@ struct config* config_load(void)
         config_set(&cfg, def->section, def->key, def->value);
     }
 
-    // find and load first available config file
-    for (size_t i = 0; i < ARRAY_SIZE(config_locations); ++i) {
-        const struct location* cl = &config_locations[i];
-        char* path = expand_path(cl->prefix, cl->postfix);
-        const bool loaded = path && load(path, &cfg);
-        free(path);
-        if (loaded) {
-            break;
-        }
+    if (!load(path, &cfg)) {
+        fprintf(stderr, "Can't open config file at %s\n", path);
+        return NULL;
     }
 
     return cfg;

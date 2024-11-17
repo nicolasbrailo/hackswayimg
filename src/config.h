@@ -26,7 +26,7 @@ struct config {
  * Load configuration from file.
  * @return loaded config instance or NULL if no config file found
  */
-struct config* config_load(void);
+struct config* config_load(const char* path);
 
 /**
  * Free configuration instance.
