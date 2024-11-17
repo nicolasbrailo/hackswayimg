@@ -1,3 +1,14 @@
+.PHONY: clean deploytgt
+
+all: hackimg
+
+clean:
+	rm -rf build hackimg
+
+deploytgt: hackimg
+	scp ./hackimg batman@10.0.0.146:/home/batman/picframe/hackimg
+
+
 # Use SYSROOT=/ for local build includes
 SYSROOT=/
 SYSROOT=/home/batman/src/xcomp-rpiz-env/mnt/
@@ -5,8 +16,6 @@ SYSROOT=/home/batman/src/xcomp-rpiz-env/mnt/
 XCOMPILE=-target arm-linux-gnueabihf \
 	 -mcpu=arm1176jzf-s \
 	 --sysroot $(SYSROOT)
-
-XCOMPILE_UNUSED=-march=armv6 -mfpu=vfp -mfloat-abi=hard -marm \
 
 CFLAGS= \
 			 $(XCOMPILE) \
@@ -34,17 +43,7 @@ CFLAGS= \
 	     -D_POSIX_C_SOURCE=200809 \
 	     -pthread \
 
-LDUNUSED=\
-	        -ldeflate \
-          -ljbig \
-          -llzma \
-					-lzstd \
-          -lbrotlicommon \
-          -lbrotlidec \
-          -lLerc \
-					-lstdc++ \
-					-lffi \
-
+# static linking like this seems to mess up loader, so run with /lib/ld-linux-armhf.so.3 ./hackimg
 LDFLAGS=\
 				  -L $(SYSROOT)/usr/lib/arm-linux-gnueabihf \
 					-Wl,--as-needed \
@@ -52,30 +51,33 @@ LDFLAGS=\
 					-Wl,-O1 \
 					-Wl,--start-group \
 					-lrt \
-					-pthread \
+					-static \
 					-ljson-c \
 					-lwebp \
 					-lwebpdemux \
 					-ljpeg \
 	        -lexpat \
-					-lm \
 					-lfreetype \
 					-lfontconfig \
 					-ltiff \
-	        -lz \
 					-lpng16 \
 					-lexif \
+	        -lz \
+          -llzma \
+					-lzstd \
+	        -ldeflate \
+          -ljbig \
+          -lLerc \
+          -lbrotlicommon \
+          -lbrotlidec \
+					-lm \
+					-pthread \
+					-lstdc++ \
+					-Wl,-Bdynamic \
 					-lwayland-client \
 					-lxkbcommon \
 					-Wl,--end-group \
 					-v
-
-# ld: -lpng16 and -lexif fail when static linked, need to see if getting a different package fixes that
-# 	  -wayland-client and lxkbcommon don't have .a packages
-# static linking like this seems to mess up loader, so run with /lib/ld-linux-armhf.so.3 ./hackimg
-# Rest of libs seem to work, but need to verify fp support
-
-all: hackimg
 
 build/xdg-shell-protocol.c: /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml 
 	mkdir -p build
@@ -125,15 +127,8 @@ hackimg: \
      build/src/viewer.o
 	clang $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-.PHONY: clean distclean
 
-clean:
-	rm -rf build hackimg
-
-distclean: clean
-	rm -rf sysroot_deps
-
-.PHONY: xcompile-start xcompile-end xcompile-rebuild-sysrootdeps deploytgt
+.PHONY: xcompile-start xcompile-end xcompile-rebuild-sysrootdeps
 
 xcompile-start:
 	./rpiz-xcompile/mount_rpy_root.sh ~/src/xcomp-rpiz-env
@@ -142,43 +137,29 @@ xcompile-end:
 	./rpiz-xcompile/umount_rpy_root.sh ~/src/xcomp-rpiz-env
 
 install_sysroot_deps:
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://archive.raspberrypi.com/debian/pool/main/w/wayland/libwayland-dev_1.22.0-2.1~bpo12+rpt1_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libx/libxkbcommon/libxkbcommon-dev_1.5.0-1_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libe/libexif/libexif12_0.6.24-1+b2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libe/libexif/libexif-dev_0.6.24-1+b2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/fontconfig/fontconfig_2.14.1-4_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/fontconfig/libfontconfig-dev_2.14.1-4_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/freetype/libfreetype-dev_2.12.1+dfsg-5+deb12u3_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/freetype/libfreetype6_2.12.1+dfsg-5+deb12u3_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libj/libjpeg-turbo/libjpeg-dev_2.1.5-2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libj/libjpeg-turbo/libjpeg62-turbo-dev_2.1.5-2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libj/libjpeg-turbo/libjpeg62-turbo_2.1.5-2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng-dev_1.6.39-2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng-tools_1.6.39-2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng16-16_1.6.39-2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff6_4.5.0-6+deb12u1_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff-dev_4.5.0-6+deb12u1_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libw/libwebp/libwebp-dev_1.2.4-0.2+deb12u1_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://archive.raspberrypi.com/debian/pool/main/w/wayland/libwayland-dev_1.22.0-2.1~bpo12+rpt1_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libx/libxkbcommon/libxkbcommon-dev_1.5.0-1_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libe/libexif/libexif12_0.6.24-1+b2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libe/libexif/libexif-dev_0.6.24-1+b2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/fontconfig/fontconfig_2.14.1-4_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/fontconfig/libfontconfig-dev_2.14.1-4_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/freetype/libfreetype-dev_2.12.1+dfsg-5+deb12u3_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/f/freetype/libfreetype6_2.12.1+dfsg-5+deb12u3_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libj/libjpeg-turbo/libjpeg-dev_2.1.5-2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libj/libjpeg-turbo/libjpeg62-turbo-dev_2.1.5-2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libj/libjpeg-turbo/libjpeg62-turbo_2.1.5-2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng-dev_1.6.39-2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng-tools_1.6.39-2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng16-16_1.6.39-2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff6_4.5.0-6+deb12u1_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff-dev_4.5.0-6+deb12u1_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libw/libwebp/libwebp-dev_1.2.4-0.2+deb12u1_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/j/json-c/libjson-c-dev_0.16-2_armhf.deb
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env 
-	#./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env 
-
-
-
-  # @#http://ftp.uk.debian.org/debian/pool/main/libw/libwebp/libwebp7_1.2.4-0.2+deb12u1_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/libw/libwebp/libwebpdemux2_1.2.4-0.2+deb12u1_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/libw/libwebp/libwebpmux3_1.2.4-0.2+deb12u1_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/libf/libffi/libffi-dev_3.4.4-1_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/libz/libzstd/libzstd1_1.5.4+dfsg2-5_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/libz/libzstd/libzstd-dev_1.5.4+dfsg2-5_armhf.deb
-  # @#http://security.debian.org/debian-security/pool/updates/main/e/expat/libexpat1-dev_2.5.0-1+deb12u1_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/libd/libdeflate/libdeflate-dev_1.14-1_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/x/xz-utils/liblzma-dev_5.4.1-0.2_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/x/xz-utils/liblzma5_5.4.1-0.2_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/l/lerc/liblerc-dev_4.0.0+ds-2_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/b/brotli/libbrotli-dev_1.0.9-2+b6_armhf.deb
-  # @#http://ftp.uk.debian.org/debian/pool/main/j/jbigkit/libjbig-dev_2.1-6.1_armhf.deb
-
-deploytgt: hackimg
-	scp ./hackimg batman@10.0.0.146:/home/batman/picframe/hackimg
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/b/brotli/libbrotli1_1.0.9-2+b3_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/b/brotli/libbrotli-dev_1.0.9-2+b3_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/x/xz-utils/liblzma-dev_5.4.1-0.2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libz/libzstd/libzstd-dev_1.5.4+dfsg2-5_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libd/libdeflate/libdeflate-dev_1.14-1_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/l/lerc/liblerc-dev_4.0.0+ds-2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/j/jbigkit/libjbig-dev_2.1-6.1_armhf.deb
 
