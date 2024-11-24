@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Manipulating data structures: arrays, strings and lists.
+// String operations.
 // Copyright (C) 2024 Artem Senichev <artemsen@gmail.com>
 
 #pragma once
@@ -17,59 +17,6 @@ struct str_slice {
     const char* value;
     size_t len;
 };
-
-/** Double linked list. */
-struct list {
-    struct list* next;
-    struct list* prev;
-};
-
-/**
- * Add new entry to the head.
- * @param head pointer to the list head
- * @param entry pointer to entry
- * @return new head pointer
- */
-struct list* list_add_head(struct list* head, struct list* entry);
-#define list_add(head, entry) \
-    (void*)list_add_head((struct list*)head, (struct list*)entry)
-
-/**
- * Append new entry to the tail.
- * @param head pointer to the list head
- * @param entry pointer to entry
- * @return new head pointer
- */
-struct list* list_append_tail(struct list* head, struct list* entry);
-#define list_append(head, entry) \
-    (void*)list_append_tail((struct list*)head, (struct list*)entry)
-
-/**
- * Remove entry from the list.
- * @param entry pointer to entry
- * @return new head pointer
- */
-struct list* list_remove_entry(struct list* entry);
-#define list_remove(entry) (void*)list_remove_entry((struct list*)entry)
-
-/**
- * Check if entry is the last one.
- * @param entry pointer to entry
- * @return true if this is the last entry in list
- */
-#define list_is_last(entry) (((struct list*)entry)->next == NULL)
-
-/**
- * List iterator.
- * @param head pointer to the list head
- * @param type iterator type name
- * @param it iterator variable name
- */
-#define list_for_each(head, type, it)                                      \
-    for (type* it = head,                                                  \
-               *it_next = head ? (type*)((struct list*)head)->next : NULL; \
-         it;                                                               \
-         it = it_next, it_next = it ? (type*)((struct list*)it)->next : NULL)
 
 /**
  * Duplicate string.
@@ -96,6 +43,17 @@ char* str_append(const char* src, size_t len, char** dst);
  * @return false if text has invalid format
  */
 bool str_to_num(const char* text, size_t len, ssize_t* value, int base);
+
+/**
+ * Convert text string to bool. Recognizes 'true', 'false' (case sensitive) or
+ * an int (0 == false)
+ * @param text text to convert
+ * @param len length of the source string (0=auto)
+ * @param value output variable
+ * @param base numeric base
+ * @return false if text has invalid format
+ */
+bool str_to_bool(const char* text, size_t len, bool* value);
 
 /**
  * Convert ansi string to wide char format.

@@ -4,39 +4,69 @@
 
 #pragma once
 
-#include "config.h"
+#include "image.h"
+
+#include <stddef.h>
+#include <stdbool.h>
 
 // Configuration parameters
-#define IMGLIST_SECTION   "list"
-#define IMGLIST_ORDER     "order"
-#define IMGLIST_LOOP      "loop"
-#define IMGLIST_RECURSIVE "recursive"
-#define IMGLIST_ALL       "all"
+#define IMGLIST_CFG_SECTION   "list"
+#define IMGLIST_CFG_ORDER     "order"
+#define IMGLIST_CFG_LOOP      "loop"
+#define IMGLIST_CFG_RECURSIVE "recursive"
+#define IMGLIST_CFG_ALL       "all"
 
-// Invalid index of the entry
-#define IMGLIST_INVALID SIZE_MAX
+#define IMGLIST_SRC             "source"
+#define IMGLIST_SRC_LOCALFS     "localfs"
+#define IMGLIST_SRC_WWW         "www"
+#define IMGLIST_NO_IMAGE_ICON     "no_image_asset"
+#define IMGLIST_WWW_URL         "www_url"
+#define IMGLIST_WWW_CACHE       "www_cache"
+#define IMGLIST_WWW_CACHE_LIMIT "www_cache_limit"
+#define IMGLIST_WWW_PREFETCH_N  "www_prefetch_n"
+#define IMGLIST_WWW_SAVE_TO_FILE  "www_save_to_file"
+#define IMGLIST_WWW_CLEANUP_CACHE "www_cleanup_cache"
+
+/** Image entry. */
+struct image_entry {
+    size_t index;        ///< Entry index in the list
+    struct image* image; ///< Image handle
+};
 
 /** Order of file list. */
 enum list_order {
-    order_none,    ///< Unsorted (system depended)
-    order_alpha,   ///< Alphanumeric sort
-    order_reverse, ///< Reversed alphanumeric sort
-    order_random   ///< Random order
+    order_none,  ///< Unsorted (system depended)
+    order_alpha, ///< Alphanumeric sort
+    order_random ///< Random order
+};
+
+/** Movement directions. */
+enum list_jump {
+    jump_first_file,
+    jump_last_file,
+    jump_next_file,
+    jump_prev_file,
+    jump_next_dir,
+    jump_prev_dir
 };
 
 /**
- * Initialize the image list: scan directories and fill the image list.
- * @param cfg config instance
- * @param sources list of sources
- * @param num number of sources in the list
- * @return size of the image list
+ * Initialize the image list.
  */
-size_t image_list_init(struct config* cfg, const char** sources, size_t num);
+void image_list_init();
 
 /**
- * Destroy global image list context.
+ * Free the image list.
  */
-void image_list_destroy(void);
+void image_list_free(void);
+
+/**
+ * Scan directories and fill the image list.
+ * @param files list of input files
+ * @param num number of files in the file list
+ * @return false if no one images loaded
+ */
+bool image_list_scan();
 
 /**
  * Get image list size.
@@ -45,87 +75,26 @@ void image_list_destroy(void);
 size_t image_list_size(void);
 
 /**
- * Get image source for specified index.
- * @param index index of the image list entry
- * @return image data source description (path, ...) or NULL if no source
+ * Get current entry in the image list.
+ * @return current entry description
  */
-const char* image_list_get(size_t index);
+struct image_entry image_list_current(void);
 
 /**
- * Find index for specified source.
- * @param source image data source
- * @return index of the entry or IMGLIST_INVALID if not found
+ * Skip current entry (remove from the image list).
+ * @return false if the image list is now empty
  */
-size_t image_list_find(const char* source);
+bool image_list_skip(void);
 
 /**
- * Get index of nearest entry in the list.
- * @param start start position
- * @param forward direction(forward/backward)
- * @param loop enable/disable loop mode
- * @return index of the entry or IMGLIST_INVALID
+ * Reset cache and reload current image.
+ * @return false if reset failed (no more images)
  */
-size_t image_list_nearest(size_t start, bool forward, bool loop);
+bool image_list_reset(void);
 
 /**
- * Get distance between two indexes.
- * @param start,end entry indexes
- * @return number of image entries between indexes
+ * Move through image list.
+ * @param jump position to set
+ * @return false if iterator can not be moved
  */
-size_t image_list_distance(size_t start, size_t end);
-
-/**
- * Get index of the entry in specified distance from start.
- * @param start start position
- * @param distance number entries to skip
- * @param forward direction(forward/backward)
- * @return index of the entry or IMGLIST_INVALID
- */
-size_t image_list_jump(size_t start, size_t distance, bool forward);
-
-/**
- * Get next entry index.
- * @param start index of the start position
- * @return index of the entry or IMGLIST_INVALID if not found
- */
-size_t image_list_next_file(size_t start);
-
-/**
- * Get previous entry index.
- * @param start index of the start position
- * @return index of the entry or IMGLIST_INVALID if not found
- */
-size_t image_list_prev_file(size_t start);
-
-/**
- * Get next directory entry index (works only for paths as source).
- * @param start index of the start position
- * @return index of the entry or IMGLIST_INVALID if not found
- */
-size_t image_list_next_dir(size_t start);
-
-/**
- * Get previous directory entry index (works only for paths as source).
- * @param start index of the start position
- * @return index of the entry or IMGLIST_INVALID if not found
- */
-size_t image_list_prev_dir(size_t start);
-
-/**
- * Get the first entry index.
- * @return index of the entry or IMGLIST_INVALID if image list is empty
- */
-size_t image_list_first(void);
-
-/**
- * Get the first entry index.
- * @return index of the entry or IMGLIST_INVALID if image list is empty
- */
-size_t image_list_last(void);
-
-/**
- * Skip entry (remove from the image list).
- * @param index entry to remove
- * @return next valid index of the entry or IMGLIST_INVALID if list is empty
- */
-size_t image_list_skip(size_t index);
+bool image_list_jump(enum list_jump jump);

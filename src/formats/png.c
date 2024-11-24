@@ -2,7 +2,7 @@
 // PNG format decoder.
 // Copyright (C) 2020 Artem Senichev <artemsen@gmail.com>
 
-#include "../loader.h"
+#include "loader.h"
 
 #include <png.h>
 #include <setjmp.h>
@@ -29,21 +29,25 @@ static void png_reader(png_structp png, png_bytep buffer, size_t size)
 }
 
 /**
- * Bind pixmap with PNG line-reading decoder.
+ * Bind pixmap with PNG decode buffer.
+ * @param buffer png buffer to reallocate
  * @param pm pixmap to bind
- * @return array of pointers to pixmap data
+ * @return false if decode failed
  */
-static png_bytep* bind_pixmap(const struct pixmap* pm)
+static bool bind_pixmap(png_bytep** buffer, const struct pixmap* pm)
 {
-    png_bytep* ptr = malloc(pm->height * sizeof(png_bytep));
+    png_bytep* ptr = realloc(*buffer, pm->height * sizeof(png_bytep));
 
-    if (ptr) {
-        for (uint32_t i = 0; i < pm->height; ++i) {
-            ptr[i] = (png_bytep)&pm->data[i * pm->width];
-        }
+    if (!ptr) {
+        return false;
     }
 
-    return ptr;
+    *buffer = ptr;
+    for (uint32_t i = 0; i < pm->height; ++i) {
+        ptr[i] = (png_bytep)&pm->data[i * pm->width];
+    }
+
+    return true;
 }
 
 /**
@@ -58,25 +62,22 @@ static bool decode_single(struct image* ctx, png_struct* png, png_info* info)
     const uint32_t width = png_get_image_width(png, info);
     const uint32_t height = png_get_image_height(png, info);
     struct pixmap* pm = image_allocate_frame(ctx, width, height);
-    png_bytep* bind;
+    png_bytep* rdrows = NULL;
 
     if (!pm) {
         return false;
     }
-
-    bind = bind_pixmap(pm);
-    if (!bind) {
+    if (!bind_pixmap(&rdrows, pm)) {
         return false;
     }
 
     if (setjmp(png_jmpbuf(png))) {
-        free(bind);
+        free(rdrows);
         return false;
     }
+    png_read_image(png, rdrows);
 
-    png_read_image(png, bind);
-
-    free(bind);
+    free(rdrows);
 
     return true;
 }
@@ -93,26 +94,25 @@ static bool decode_single(struct image* ctx, png_struct* png, png_info* info)
 static bool decode_frame(struct image* ctx, png_struct* png, png_info* info,
                          size_t index)
 {
-    png_uint_32 width = 0;
-    png_uint_32 height = 0;
-    png_uint_32 offset_x = 0;
-    png_uint_32 offset_y = 0;
-    png_uint_16 delay_num = 0;
-    png_uint_16 delay_den = 0;
-    png_byte dispose = 0;
-    png_byte blend = 0;
-    png_bytep* bind;
-    struct pixmap frame_png;
-    struct image_frame* frame_img = &ctx->frames[index];
+    bool rc = false;
+    struct image_frame* frame = &ctx->frames[index];
+    png_byte dispose = 0, blend = 0;
+    png_uint_16 delay_num = 0, delay_den = 0;
+    png_uint_32 x = 0, y = 0, width = 0, height = 0;
+    png_bytep* rdrows = NULL;
+    struct pixmap frame_pm = { 0, 0, NULL };
+
+    if (setjmp(png_jmpbuf(png))) {
+        goto done;
+    }
 
     // get frame params
     if (png_get_valid(png, info, PNG_INFO_acTL)) {
         png_read_frame_head(png, info);
     }
     if (png_get_valid(png, info, PNG_INFO_fcTL)) {
-        png_get_next_frame_fcTL(png, info, &width, &height, &offset_x,
-                                &offset_y, &delay_num, &delay_den, &dispose,
-                                &blend);
+        png_get_next_frame_fcTL(png, info, &width, &height, &x, &y, &delay_num,
+                                &delay_den, &dispose, &blend);
     }
 
     // fixup frame params
@@ -128,24 +128,14 @@ static bool decode_frame(struct image* ctx, png_struct* png, png_info* info,
     if (delay_num == 0) {
         delay_num = 100;
     }
-
-    // allocate frame buffer and bind it to png reader
-    if (!pixmap_create(&frame_png, width, height)) {
-        return false;
-    }
-    bind = bind_pixmap(&frame_png);
-    if (!bind) {
-        pixmap_free(&frame_png);
-        return false;
-    }
+    frame->duration = (float)delay_num * 1000 / delay_den;
 
     // decode frame into pixmap
-    if (setjmp(png_jmpbuf(png))) {
-        pixmap_free(&frame_png);
-        free(bind);
-        return false;
+    if (!pixmap_create(&frame_pm, width, height) ||
+        !bind_pixmap(&rdrows, &frame_pm)) {
+        goto done;
     }
-    png_read_image(png, bind);
+    png_read_image(png, rdrows);
 
     // handle dispose
     if (dispose == PNG_DISPOSE_OP_PREVIOUS) {
@@ -153,27 +143,35 @@ static bool decode_frame(struct image* ctx, png_struct* png, png_info* info,
             dispose = PNG_DISPOSE_OP_BACKGROUND;
         } else if (index + 1 < ctx->num_frames) {
             struct pixmap* next = &ctx->frames[index + 1].pm;
-            pixmap_copy(&frame_img->pm, next, 0, 0, false);
+            pixmap_copy(next, 0, 0, &frame->pm, frame->pm.width,
+                        frame->pm.height);
         }
     }
 
     // put frame on final pixmap
-    pixmap_copy(&frame_png, &frame_img->pm, offset_x, offset_y,
-                blend == PNG_BLEND_OP_OVER);
+    switch (blend) {
+        case PNG_BLEND_OP_SOURCE:
+            pixmap_copy(&frame->pm, x, y, &frame_pm, frame_pm.width,
+                        frame_pm.height);
+            break;
+        case PNG_BLEND_OP_OVER:
+            pixmap_over(&frame->pm, x, y, &frame_pm, frame_pm.width,
+                        frame_pm.height);
+            break;
+    }
 
     // handle dispose
     if (dispose == PNG_DISPOSE_OP_NONE && index + 1 < ctx->num_frames) {
         struct pixmap* next = &ctx->frames[index + 1].pm;
-        pixmap_copy(&frame_img->pm, next, 0, 0, false);
+        pixmap_copy(next, 0, 0, &frame->pm, frame->pm.width, frame->pm.height);
     }
 
-    // calc frame duration in milliseconds
-    frame_img->duration = (float)delay_num * 1000 / delay_den;
+    rc = true;
 
-    pixmap_free(&frame_png);
-    free(bind);
-
-    return true;
+done:
+    pixmap_free(&frame_pm);
+    free(rdrows);
+    return rc;
 }
 
 /**
@@ -249,10 +247,12 @@ enum loader_status decode_png(struct image* ctx, const uint8_t* data,
     // create decoder
     png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (!png) {
+        image_print_error(ctx, "unable to initialize png decoder");
         return ldr_fmterror;
     }
     info = png_create_info_struct(png);
     if (!info) {
+        image_print_error(ctx, "unable to create png object");
         png_destroy_read_struct(&png, NULL, NULL);
         return ldr_fmterror;
     }
@@ -260,6 +260,7 @@ enum loader_status decode_png(struct image* ctx, const uint8_t* data,
     // setup error handling
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_read_struct(&png, &info, NULL);
+        image_print_error(ctx, "failed to decode png");
         return ldr_fmterror;
     }
 

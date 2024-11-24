@@ -4,19 +4,11 @@
 
 #pragma once
 
+#include "pixmap.h"
+
 #include <stdbool.h>
-#include <stddef.h>
-#include <sys/types.h>
 
 #define INVALID_SWAY_IPC -1
-
-/** Position and size of a window. */
-struct wndrect {
-    ssize_t x;
-    ssize_t y;
-    size_t width;
-    size_t height;
-};
 
 /**
  * Connect to Sway.
@@ -37,7 +29,7 @@ void sway_disconnect(int ipc);
  * @param fullscreen current full screen mode
  * @return true if operation completed successfully
  */
-bool sway_current(int ipc, struct wndrect* wnd, bool* fullscreen);
+bool sway_current(int ipc, struct rect* wnd, bool* fullscreen);
 
 /**
  * Add rules for Sway for application's window:
@@ -45,10 +37,11 @@ bool sway_current(int ipc, struct wndrect* wnd, bool* fullscreen);
  * 2. Set initial position.
  *
  * @param ipc IPC context
+ * @param app application Id
  * @param x horizontal window position
  * @param v vertical window position
  * @param absolute flag to use absolute position instead of relative to the
  *                 current workspace
  * @return true if operation completed successfully
  */
-bool sway_add_rules(int ipc, int x, int y, bool absolute);
+bool sway_add_rules(int ipc, const char* app, int x, int y, bool absolute);

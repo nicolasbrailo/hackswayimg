@@ -4,73 +4,78 @@
 
 #pragma once
 
-#include "config.h"
-#include "image.h"
+#include "font.h"
+#include "pixmap.h"
 
-/** Available info fields. */
-enum info_field {
-    info_file_name,
-    info_file_path,
-    info_file_size,
-    info_image_format,
-    info_image_size,
-    info_exif,
-    info_frame,
-    info_index,
-    info_scale,
-    info_status,
+#include <stddef.h>
+
+/** Info block position. */
+enum info_position {
+    info_top_left,
+    info_top_right,
+    info_bottom_left,
+    info_bottom_right,
+};
+#define INFO_POSITION_NUM 4
+
+/** Info line. */
+struct info_line {
+    struct text_surface key;
+    struct text_surface value;
 };
 
-/**
- * Initialize global info context.
- * @param cfg config instance
- */
-void info_init(struct config* cfg);
+// fwddcl from canvas.h
+struct block_background;
 
 /**
- * Destroy global info context.
+ * Create info context.
  */
-void info_destroy(void);
+void info_create(void);
 
 /**
- * Switch display mode.
+ * Initialize info context.
+ */
+void info_init(void);
+
+/**
+ * Free info context.
+ */
+void info_free(void);
+
+/**
+ * Set the display mode.
  * @param mode display mode name
  */
-void info_switch(const char* mode);
+void info_set_mode(const char* mode);
 
 /**
- * Enable/disable help layer.
+ * Refresh info data.
+ * @param frame_idx index of the current frame
  */
-void info_switch_help(void);
+void info_update(size_t frame_idx);
 
 /**
- * Check if help layer is enabled.
- * @return true if help layer is visible
+ * Set status text.
+ * @param fmt message format description
  */
-bool info_help_active(void);
+void info_set_status(const char* fmt, ...)
+    __attribute__((format(printf, 1, 2)));
 
 /**
- * Check if info enabled.
- * @param true if info text layer is enabled
+ * Get the configured background for the info block
  */
-bool info_enabled(void);
+const struct block_background* info_get_background();
 
 /**
- * Compose info data from image.
- * @param image image instance
+ * Get number of lines in the specified block.
+ * @param pos block position
+ * @return number of lines
  */
-void info_reset(const struct image* image);
+size_t info_height(enum info_position pos);
 
 /**
- * Update info text.
- * @param field info field id
- * @param fmt text string to set, NULL to clear
+ * Get list of text lines (key->val).
+ * @param pos block position
+ * @return pointer to the lines array
  */
-void info_update(enum info_field field, const char* fmt, ...)
-    __attribute__((format(printf, 2, 3)));
-
-/**
- * Print info text.
- * @param window target window surface
- */
-void info_print(struct pixmap* window);
+const struct info_line* info_lines(enum info_position pos);

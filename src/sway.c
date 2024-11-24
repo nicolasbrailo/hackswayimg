@@ -123,15 +123,16 @@ static struct json_object* ipc_message(int ipc, enum ipc_msg_type type,
 /**
  * Send command for specified application.
  * @param ipc IPC context (socket file descriptor)
+ * @param app application Id
  * @param command command to send
  * @return true if operation completed successfully
  */
-static bool ipc_command(int ipc, const char* command)
+static bool ipc_command(int ipc, const char* app, const char* command)
 {
     bool rc = false;
 
     char cmd[128];
-    snprintf(cmd, sizeof(cmd), "for_window [pid=%d] %s", getpid(), command);
+    snprintf(cmd, sizeof(cmd), "for_window [app_id=%s] %s", app, command);
 
     json_object* response = ipc_message(ipc, IPC_COMMAND, cmd);
     if (response) {
@@ -178,7 +179,7 @@ static bool read_int(json_object* node, const char* name, int* value)
  * @param rect rectangle geometry
  * @return true if operation completed successfully
  */
-static bool read_rect(json_object* node, const char* name, struct wndrect* rect)
+static bool read_rect(json_object* node, const char* name, struct rect* rect)
 {
     int x, y, width, height;
     struct json_object* rn;
@@ -294,7 +295,7 @@ void sway_disconnect(int ipc)
     }
 }
 
-bool sway_current(int ipc, struct wndrect* wnd, bool* fullscreen)
+bool sway_current(int ipc, struct rect* wnd, bool* fullscreen)
 {
     bool rc = false;
 
@@ -323,8 +324,8 @@ bool sway_current(int ipc, struct wndrect* wnd, bool* fullscreen)
     }
     json_object* cur_wks = current_workspace(workspaces);
     if (cur_wks) {
-        struct wndrect workspace;
-        struct wndrect global;
+        struct rect workspace;
+        struct rect global;
         rc = read_rect(cur_wks, "rect", &workspace) &&
             read_rect(cur_wnd, "rect", &global);
         if (rc) {
@@ -339,10 +340,11 @@ done:
     return rc;
 }
 
-bool sway_add_rules(int ipc, int x, int y, bool absolute)
+bool sway_add_rules(int ipc, const char* app, int x, int y, bool absolute)
 {
     char move[64];
     snprintf(move, sizeof(move), "move %s position %i %i",
              absolute ? "absolute" : "", x, y);
-    return ipc_command(ipc, "floating enable") && ipc_command(ipc, move);
+    return ipc_command(ipc, app, "floating enable") &&
+        ipc_command(ipc, app, move);
 }

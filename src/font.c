@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-// Font renderer.
+// Text renderer.
 // Copyright (C) 2022 Artem Senichev <artemsen@gmail.com>
 
 #include "font.h"
 
-#include "memdata.h"
+#include "config.h"
+#include "str.h"
 
 // font realted
 #include <fontconfig/fontconfig.h>
@@ -12,29 +13,22 @@
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
 
-// Configuration
-#define CFG_SECTION    "font"
-#define CFG_NAME       "name"
-#define CFG_NAME_DEF   "monospace"
-#define CFG_SIZE       "size"
-#define CFG_SIZE_DEF   14
-#define CFG_COLOR      "color"
-#define CFG_COLOR_DEF  ARGB(0xff, 0xcc, 0xcc, 0xcc)
-#define CFG_SHADOW     "shadow"
-#define CFG_SHADOW_DEF ARGB(0x80, 0, 0, 0)
+#define SPACE_WH_REL 2
+#define GLYPH_GW_REL 4
 
-#define POINT_FACTOR 64.0 // default points per pixel for 26.6 format
-#define SPACE_WH_REL 2.0
+// Defaults
+#define DEFALT_FONT  "monospace"
+#define DEFALT_SIZE  14
+#define DEFALT_SCALE 1
 
 /** Font context. */
 struct font {
     FT_Library lib; ///< Font lib instance
     FT_Face face;   ///< Font face instance
-    argb_t color;   ///< Font color
-    argb_t shadow;  ///< Font shadow color
+    char* name;     ///< Font face name
+    size_t size;    ///< Font size (pt)
+    size_t scale;   ///< Scale factor (HiDPI)
 };
-
-/** Global font context instance. */
 static struct font ctx;
 
 /**
@@ -81,79 +75,58 @@ static bool search_font_file(const char* name, char* font_file, size_t len)
 }
 
 /**
- * Calc size of the surface and allocate memory for the mask.
- * @param text string to print
- * @param surface text surface
- * @return base line offset or SIZE_MAX on errors
+ * Custom section loader, see `config_loader` for details.
  */
-static size_t allocate_surface(const wchar_t* text,
-                               struct text_surface* surface)
+static enum config_status load_config(const char* key, const char* value)
 {
-    const FT_Size_Metrics* metrics = &ctx.face->size->metrics;
-    const size_t space_size = metrics->x_ppem / SPACE_WH_REL;
-    const size_t height = metrics->height / POINT_FACTOR;
-    size_t base_offset =
-        (ctx.face->ascender * (metrics->y_scale / 65536.0)) / POINT_FACTOR;
-    size_t width = 0;
-    uint8_t* data = NULL;
-    size_t data_size;
+    enum config_status status = cfgst_invalid_value;
 
-    // get total width
-    while (*text) {
-        if (*text == L' ') {
-            width += space_size;
-        } else if (FT_Load_Char(ctx.face, *text, FT_LOAD_RENDER) == 0) {
-            const FT_GlyphSlot glyph = ctx.face->glyph;
-            width += glyph->advance.x / POINT_FACTOR;
-            if ((FT_Int)base_offset < glyph->bitmap_top) {
-                base_offset = glyph->bitmap_top;
-            }
+    if (strcmp(key, "name") == 0) {
+        str_dup(value, &ctx.name);
+        status = cfgst_ok;
+    } else if (strcmp(key, "size") == 0) {
+        ssize_t num;
+        if (str_to_num(value, 0, &num, 0) && num > 0 && num < 1024) {
+            ctx.size = num;
+            status = cfgst_ok;
         }
-        ++text;
+    } else {
+        status = cfgst_invalid_key;
     }
 
-    // allocate surface buffer
-    data_size = width * height;
-    if (data_size) {
-        data = realloc(surface->data, data_size);
-        if (!data) {
-            return SIZE_MAX;
-        }
-        surface->width = width;
-        surface->height = height;
-        surface->data = data;
-        memset(surface->data, 0, data_size);
-    }
-
-    return base_offset;
+    return status;
 }
 
-void font_init(struct config* cfg)
+void font_create(void)
 {
-    char font_file[256];
-    const char* font_name;
-    size_t font_size;
+    // set defaults
+    str_dup(DEFALT_FONT, &ctx.name);
+    ctx.size = DEFALT_SIZE;
+    ctx.scale = DEFALT_SCALE;
 
-    // load font
-    font_name = config_get_string(cfg, CFG_SECTION, CFG_NAME, CFG_NAME_DEF);
-    if (!search_font_file(font_name, font_file, sizeof(font_file)) ||
-        FT_Init_FreeType(&ctx.lib) != 0 ||
-        FT_New_Face(ctx.lib, font_file, 0, &ctx.face) != 0) {
-        fprintf(stderr, "WARNING: Unable to load font %s\n", font_name);
+    // register configuration loader
+    config_add_loader(FONT_CONFIG_SECTION, load_config);
+}
+
+void font_init(void)
+{
+    char file[256];
+    const FT_F26Dot6 size = ctx.size * ctx.scale * 64;
+
+    if (!search_font_file(ctx.name, file, sizeof(file))) {
+        return;
+    }
+    if (FT_Init_FreeType(&ctx.lib) != 0) {
+        return;
+    }
+    if (FT_New_Face(ctx.lib, file, 0, &ctx.face) != 0) {
         return;
     }
 
-    // set font size
-    font_size =
-        config_get_num(cfg, CFG_SECTION, CFG_SIZE, 1, 256, CFG_SIZE_DEF);
-    FT_Set_Char_Size(ctx.face, font_size * POINT_FACTOR, 0, 96, 0);
-
-    // color and shdow parameters
-    ctx.color = config_get_color(cfg, CFG_SECTION, CFG_COLOR, CFG_COLOR_DEF);
-    ctx.shadow = config_get_color(cfg, CFG_SECTION, CFG_SHADOW, CFG_SHADOW_DEF);
+    FT_Set_Char_Size(ctx.face, size, 0, 96, 0);
 }
 
-void font_destroy(void)
+void font_free(void)
 {
     if (ctx.face) {
         FT_Done_Face(ctx.face);
@@ -161,80 +134,83 @@ void font_destroy(void)
     if (ctx.lib) {
         FT_Done_FreeType(ctx.lib);
     }
+    free(ctx.name);
+}
+
+void font_set_scale(size_t scale)
+{
+    ctx.scale = scale;
 }
 
 bool font_render(const char* text, struct text_surface* surface)
 {
-    size_t space_size;
-    size_t base_offset;
+    size_t x;
     wchar_t* wide;
-    wchar_t* it;
-    size_t x = 0;
-
-    if (!ctx.face) {
-        return false;
-    }
-
-    space_size = ctx.face->size->metrics.x_ppem / SPACE_WH_REL;
+    const wchar_t* ptr;
+    const size_t space_size = ctx.face->size->metrics.y_ppem / SPACE_WH_REL;
 
     wide = str_to_wide(text, NULL);
     if (!wide) {
         return false;
     }
 
-    base_offset = allocate_surface(wide, surface);
-    if (base_offset == SIZE_MAX) {
+    // get total width
+    x = 0;
+    ptr = wide;
+    while (*ptr) {
+        if (*ptr == L' ') {
+            x += space_size;
+        } else if (FT_Load_Char(ctx.face, *ptr, FT_LOAD_RENDER) == 0) {
+            x += ctx.face->glyph->advance.x >>
+                6; // why 6? from freetype tutorial!
+        }
+        ++ptr;
+    }
+
+    // allocate surface buffer
+    surface->width = x;
+    surface->height = ctx.face->size->metrics.y_ppem;
+    surface->data = calloc(1, surface->height * surface->width);
+    if (!surface->data) {
         free(wide);
         return false;
     }
 
     // draw glyphs
-    it = wide;
-    while (*it) {
-        if (*it == L' ') {
+    x = 0;
+    ptr = wide;
+    while (*ptr) {
+        if (*ptr == L' ') {
             x += space_size;
-        } else if (FT_Load_Char(ctx.face, *it, FT_LOAD_RENDER) == 0) {
+        } else if (FT_Load_Char(ctx.face, *ptr, FT_LOAD_RENDER) == 0) {
             const FT_GlyphSlot glyph = ctx.face->glyph;
             const FT_Bitmap* bmp = &glyph->bitmap;
-            const size_t off_y = base_offset - glyph->bitmap_top;
-            size_t size;
+            size_t y = ctx.face->size->metrics.y_ppem - glyph->bitmap_top;
 
-            // calc line width, floating point math doesn't match bmp width
-            if (x + bmp->width < surface->width) {
-                size = bmp->width;
+            // it's a hack, but idk how to up the baseline
+            const size_t baseline_offset = ctx.size / 3;
+            if (y > baseline_offset) {
+                y -= baseline_offset;
             } else {
-                size = surface->width - x;
+                y = 0;
             }
 
-            // put glyph's bitmap on the surface
-            for (size_t y = 0; y < bmp->rows; ++y) {
-                const size_t offset = (y + off_y) * surface->width + x;
-                uint8_t* dst = &surface->data[offset + glyph->bitmap_left];
-                memcpy(dst, &bmp->buffer[y * bmp->pitch], size);
+            for (size_t glyph_y = 0; glyph_y < bmp->rows; ++glyph_y) {
+                uint8_t* dst;
+                if (glyph_y + y >= surface->height) {
+                    break; // it's a hack too =)
+                }
+                dst = &surface->data[(glyph_y + y) * surface->width + x +
+                                     glyph->bitmap_left];
+                memcpy(dst, &bmp->buffer[glyph_y * bmp->pitch], bmp->width);
             }
 
-            x += glyph->advance.x / POINT_FACTOR;
+            x += glyph->advance.x >> 6;
         }
-        ++it;
+        ++ptr;
     }
 
     free(wide);
 
     return true;
-}
-
-void font_print(struct pixmap* wnd, ssize_t x, ssize_t y,
-                const struct text_surface* text)
-{
-    if (ARGB_GET_A(ctx.shadow)) {
-        ssize_t shadow_offset = text->height / 16;
-        if (shadow_offset < 1) {
-            shadow_offset = 1;
-        }
-        pixmap_apply_mask(wnd, x + shadow_offset, y + shadow_offset, text->data,
-                          text->width, text->height, ctx.shadow);
-    }
-
-    pixmap_apply_mask(wnd, x, y, text->data, text->width, text->height,
-                      ctx.color);
 }

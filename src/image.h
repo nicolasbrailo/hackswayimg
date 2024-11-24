@@ -11,9 +11,8 @@ struct image_info;
 
 /** Image context. */
 struct image {
-    size_t index;               ///< Index of the entry in the image list
-    char* source;               ///< Image source (e.g. path to the image file)
-    const char* name;           ///< Name of the image file
+    const char* file_path;      ///< Full path to the image file
+    const char* file_name;      ///< File name of the image file
     size_t file_size;           ///< Size of image file
     char* format;               ///< Format description
     struct image_frame* frames; ///< Image frames
@@ -36,10 +35,20 @@ struct image_info {
 };
 
 /**
- * Create empty image instance.
+ * Load image from file.
+ * @param file path to the file to load
  * @return image context or NULL on errors
  */
-struct image* image_create(void);
+struct image* image_from_file(const char* file);
+
+struct image* image_create(const char* path, const uint8_t* data,
+                                  size_t size);
+
+/**
+ * Load image from stdin data.
+ * @return image context or NULL on errors
+ */
+struct image* image_from_stdin(void);
 
 /**
  * Free image.
@@ -74,16 +83,6 @@ void image_flip_horizontal(struct image* ctx);
 void image_rotate(struct image* ctx, size_t angle);
 
 /**
- * Create thumbnail from full size image.
- * @param image original image
- * @param size thumbnail size in pixels
- * @param fill thumbnail scale mode (fill/fit)
- * @param antialias use antialiasing
- */
-void image_thumbnail(struct image* image, size_t size, bool fill,
-                     bool antialias);
-
-/**
  * Set image format description.
  * @param ctx image context
  * @param fmt format description
@@ -101,7 +100,7 @@ void image_add_meta(struct image* ctx, const char* key, const char* fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
 /**
- * Create single frame, allocate buffer and add frame to the image.
+ * Create sinlge frame, allocate buffer and add frame to the image.
  * @param width frame width in px
  * @param height frame height in px
  * @return pointer to the pixmap associated with the frame, or NULL on errors

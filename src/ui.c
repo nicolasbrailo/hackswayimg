@@ -4,39 +4,43 @@
 
 #include "ui.h"
 
-#include "application.h"
 #include "buildcfg.h"
 #include "config.h"
+#include "keybind.h"
+#include "str.h"
+#include "viewer.h"
 #include "xdg-shell-protocol.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/timerfd.h>
+#include <time.h>
 #include <unistd.h>
 
 // Max number of output displays
 #define MAX_OUTPUTS 4
 
-// Window size
-#define WINDOW_MIN            10
-#define WINDOW_MAX            100000
-#define WINDOW_DEFAULT_WIDTH  800
-#define WINDOW_DEFAULT_HEIGHT 600
-
-// Mouse buttons, from <linux/input-event-codes.h>
+// Mouse button
 #ifndef BTN_LEFT
-#define BTN_LEFT   0x110
-#define BTN_RIGHT  0x111
-#define BTN_MIDDLE 0x112
-#define BTN_SIDE   0x113
-#define BTN_EXTRA  0x114
+#define BTN_LEFT 0x110 // from <linux/input-event-codes.h>
 #endif
 
-// Uncomment the following line to enable printing draw time
-// #define TRACE_DRAW_TIME
+/** Loop state */
+enum state {
+    state_ok,
+    state_exit,
+    state_error,
+};
+
+/** Custom event */
+struct custom_event {
+    int fd;
+    fd_event handler;
+};
 
 /** UI context */
 struct ui {
@@ -49,6 +53,7 @@ struct ui {
         struct wl_seat* seat;
         struct wl_keyboard* keyboard;
         struct wl_pointer* pointer;
+        struct wl_touch* touch;
         struct wl_surface* surface;
         struct wl_output* output;
     } wl;
@@ -64,13 +69,11 @@ struct ui {
         struct wl_buffer* buffer0;
         struct wl_buffer* buffer1;
         struct wl_buffer* current;
-        struct pixmap pm;
+        ssize_t x;
+        ssize_t y;
         size_t width;
         size_t height;
         int32_t scale;
-#ifdef TRACE_DRAW_TIME
-        struct timespec draw_time;
-#endif
     } wnd;
 
     // cross-desktop
@@ -103,17 +106,28 @@ struct ui {
         int y;
     } mouse;
 
+    // app_id name (window class)
+    char* app_id;
+
     // fullscreen mode
     bool fullscreen;
 
-    // flag to cancel event queue
-    bool event_handled;
+    // custom events
+    struct custom_event* events;
+    size_t num_events;
+
+    // global state
+    enum state state;
 };
 
-/** Global UI context instance. */
 static struct ui ctx = {
     .wnd.scale = 1,
+    .wnd.x = POS_FROM_PARENT,
+    .wnd.y = POS_FROM_PARENT,
+    .wnd.width = SIZE_FROM_PARENT,
+    .wnd.height = SIZE_FROM_PARENT,
     .repeat.fd = -1,
+    .state = state_ok,
 };
 
 /**
@@ -144,8 +158,8 @@ static struct wl_buffer* create_buffer(void)
 
     // generate unique file name
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    snprintf(path, sizeof(path), "/" APP_NAME "_%" PRIx64,
-             ((uint64_t)ts.tv_sec << 32) | ts.tv_nsec);
+    snprintf(path, sizeof(path), "/" APP_NAME "_%lx",
+             (ts.tv_sec << 31) | ts.tv_nsec);
 
     // open shared mem
     fd = shm_open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
@@ -186,21 +200,6 @@ static struct wl_buffer* create_buffer(void)
 }
 
 /**
- * Free window buffer.
- * @param buffer wayland buffer to free
- */
-static void free_buffer(struct wl_buffer* buffer)
-{
-    if (buffer) {
-        const size_t stride = ctx.wnd.pm.width * sizeof(argb_t);
-        const size_t size = stride * ctx.wnd.pm.height;
-        void* data = wl_buffer_get_user_data(buffer);
-        wl_buffer_destroy(buffer);
-        munmap(data, size);
-    }
-}
-
-/**
  * Recreate window buffers.
  * @return true if operation completed successfully
  */
@@ -208,22 +207,25 @@ static bool recreate_buffers(void)
 {
     ctx.wnd.current = NULL;
 
-    // recreate buffers
-    free_buffer(ctx.wnd.buffer0);
+    // first buffer
+    if (ctx.wnd.buffer0) {
+        wl_buffer_destroy(ctx.wnd.buffer0);
+    }
     ctx.wnd.buffer0 = create_buffer();
-    free_buffer(ctx.wnd.buffer1);
+    if (!ctx.wnd.buffer0) {
+        return false;
+    }
+    // second buffer
+    if (ctx.wnd.buffer1) {
+        wl_buffer_destroy(ctx.wnd.buffer1);
+    }
     ctx.wnd.buffer1 = create_buffer();
-    if (!ctx.wnd.buffer0 || !ctx.wnd.buffer1) {
+    if (!ctx.wnd.buffer1) {
         return false;
     }
 
-    ctx.wnd.pm.width = ctx.wnd.width;
-    ctx.wnd.pm.height = ctx.wnd.height;
-
     ctx.wnd.current = ctx.wnd.buffer0;
-
-    app_on_resize();
-
+    viewer_on_resize(ctx.wnd.width, ctx.wnd.height, ctx.wnd.scale);
     return true;
 }
 
@@ -243,9 +245,6 @@ static void on_keyboard_enter(void* data, struct wl_keyboard* wl_keyboard,
 static void on_keyboard_leave(void* data, struct wl_keyboard* wl_keyboard,
                               uint32_t serial, struct wl_surface* surface)
 {
-    // reset keyboard repeat timer
-    struct itimerspec ts = { 0 };
-    timerfd_settime(ctx.repeat.fd, 0, &ts, NULL);
 }
 
 static void on_keyboard_modifiers(void* data, struct wl_keyboard* wl_keyboard,
@@ -287,6 +286,7 @@ static void on_keyboard_key(void* data, struct wl_keyboard* wl_keyboard,
                             uint32_t serial, uint32_t time, uint32_t key,
                             uint32_t state)
 {
+    printf("on_keyboard_key\n");
     struct itimerspec ts = { 0 };
 
     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
@@ -297,7 +297,7 @@ static void on_keyboard_key(void* data, struct wl_keyboard* wl_keyboard,
         key += 8;
         keysym = xkb_state_key_get_one_sym(ctx.xkb.state, key);
         if (keysym != XKB_KEY_NoSymbol) {
-            app_on_keyboard(keysym, keybind_mods(ctx.xkb.state));
+            viewer_on_keyboard(keysym, keybind_mods(ctx.xkb.state));
             // handle key repeat
             if (ctx.repeat.rate &&
                 xkb_keymap_key_repeats(ctx.xkb.keymap, key)) {
@@ -332,8 +332,8 @@ static void on_pointer_motion(void* data, struct wl_pointer* wl_pointer,
     if (ctx.mouse.active) {
         const int dx = x - ctx.mouse.x;
         const int dy = y - ctx.mouse.y;
-        if (dx || dy) {
-            app_on_drag(dx, dy);
+        if (dx && dy) {
+            viewer_on_drag(dx, dy);
         }
     }
 
@@ -345,38 +345,8 @@ static void on_pointer_button(void* data, struct wl_pointer* wl_pointer,
                               uint32_t serial, uint32_t time, uint32_t button,
                               uint32_t state)
 {
-    const bool pressed = (state == WL_POINTER_BUTTON_STATE_PRESSED);
-
     if (button == BTN_LEFT) {
-        ctx.mouse.active = pressed;
-    }
-
-    if (pressed) {
-        xkb_keysym_t key;
-        switch (button) {
-            // TODO: Configurable drag
-            // case BTN_LEFT:
-            //     key = VKEY_MOUSE_LEFT;
-            //     break;
-            case BTN_RIGHT:
-                key = VKEY_MOUSE_RIGHT;
-                break;
-            case BTN_MIDDLE:
-                key = VKEY_MOUSE_MIDDLE;
-                break;
-            case BTN_SIDE:
-                key = VKEY_MOUSE_SIDE;
-                break;
-            case BTN_EXTRA:
-                key = VKEY_MOUSE_EXTRA;
-                break;
-            default:
-                key = XKB_KEY_NoSymbol;
-                break;
-        }
-        if (key != XKB_KEY_NoSymbol) {
-            app_on_keyboard(key, keybind_mods(ctx.xkb.state));
-        }
+        ctx.mouse.active = (state == WL_POINTER_BUTTON_STATE_PRESSED);
     }
 }
 
@@ -384,15 +354,52 @@ static void on_pointer_axis(void* data, struct wl_pointer* wl_pointer,
                             uint32_t time, uint32_t axis, wl_fixed_t value)
 {
     xkb_keysym_t key;
-
     if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
         key = value > 0 ? VKEY_SCROLL_RIGHT : VKEY_SCROLL_LEFT;
     } else {
         key = value > 0 ? VKEY_SCROLL_DOWN : VKEY_SCROLL_UP;
     }
-
-    app_on_keyboard(key, keybind_mods(ctx.xkb.state));
+    viewer_on_keyboard(key, keybind_mods(ctx.xkb.state));
 }
+
+struct wl_touch_state {
+    int start_x;
+    int start_y;
+    int end_x;
+    int end_y;
+} touch_state;
+
+static void wl_touch_down(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, struct wl_surface *surface, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+    touch_state.start_x = x;
+    touch_state.start_y = y;
+}
+static void wl_touch_up(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, int32_t id) {
+    int dx = touch_state.end_x - touch_state.start_x;
+    int dy = touch_state.end_y - touch_state.start_y;
+#define TOUCH_MOVE_MIN 3000
+    if (abs(dx) < TOUCH_MOVE_MIN) {
+        dx = 0;
+    }
+    if (abs(dy) < TOUCH_MOVE_MIN) {
+        dy = 0;
+    }
+
+    if (dx > 0) {
+        viewer_on_keyboard(XKB_KEY_SunPageUp, 0);
+    } else if (dx < 0) {
+        viewer_on_keyboard(XKB_KEY_SunPageDown, 0);
+    }
+
+    // TODO touch to show metadata
+}
+static void wl_touch_motion(void *data, struct wl_touch *wl_touch, uint32_t time, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+    touch_state.end_x = x;
+    touch_state.end_y = y;
+}
+static void wl_touch_frame(void *data, struct wl_touch *wl_touch) {}
+static void wl_touch_cancel(void *data, struct wl_touch *wl_touch) {}
+static void wl_touch_shape(void *data, struct wl_touch *wl_touch, int32_t id, wl_fixed_t major, wl_fixed_t minor) {}
+static void wl_touch_orientation(void *data, struct wl_touch *wl_touch, int32_t id, wl_fixed_t orientation) {}
 
 static const struct wl_keyboard_listener keyboard_listener = {
     .keymap = on_keyboard_keymap,
@@ -409,6 +416,16 @@ static const struct wl_pointer_listener pointer_listener = {
     .motion = on_pointer_motion,
     .button = on_pointer_button,
     .axis = on_pointer_axis,
+};
+
+static const struct wl_touch_listener touch_listener = {
+    .down = wl_touch_down,
+    .up = wl_touch_up,
+    .motion = wl_touch_motion,
+    .frame = wl_touch_frame,
+    .cancel = wl_touch_cancel,
+    .shape = wl_touch_shape,
+    .orientation = wl_touch_orientation,
 };
 
 /*******************************************************************************
@@ -433,6 +450,14 @@ static void on_seat_capabilities(void* data, struct wl_seat* seat, uint32_t cap)
         wl_pointer_destroy(ctx.wl.pointer);
         ctx.wl.pointer = NULL;
     }
+
+    if (cap & WL_SEAT_CAPABILITY_TOUCH) {
+        ctx.wl.touch = wl_seat_get_touch(seat);
+        wl_touch_add_listener(ctx.wl.touch, &touch_listener, NULL);
+    } else if (ctx.wl.touch) {
+        wl_touch_release(ctx.wl.touch);
+        ctx.wl.touch = NULL;
+    }
 }
 
 static const struct wl_seat_listener seat_listener = { .capabilities =
@@ -447,8 +472,13 @@ static void on_xdg_surface_configure(void* data, struct xdg_surface* surface,
 {
     xdg_surface_ack_configure(surface, serial);
 
+    if (!recreate_buffers()) {
+        ctx.state = state_error;
+        return;
+    }
+
     if (ctx.xdg.initialized) {
-        app_redraw();
+        ui_redraw();
     } else {
         wl_surface_attach(ctx.wl.surface, ctx.wnd.current, 0, 0);
         wl_surface_commit(ctx.wl.surface);
@@ -472,28 +502,16 @@ static void handle_xdg_toplevel_configure(void* data, struct xdg_toplevel* lvl,
                                           int32_t width, int32_t height,
                                           struct wl_array* states)
 {
-    bool reset_buffers = (ctx.wnd.current == NULL);
-
     if (width && height) {
-        const size_t new_width = width * ctx.wnd.scale;
-        const size_t new_height = height * ctx.wnd.scale;
-        if (width != (int32_t)ctx.wnd.width ||
-            height != (int32_t)ctx.wnd.height) {
-            ctx.wnd.width = new_width;
-            ctx.wnd.height = new_height;
-            reset_buffers = true;
-        }
         ctx.xdg.initialized = true;
-    }
-
-    if (reset_buffers && !recreate_buffers()) {
-        app_exit(1);
+        ctx.wnd.width = width * ctx.wnd.scale;
+        ctx.wnd.height = height * ctx.wnd.scale;
     }
 }
 
 static void handle_xdg_toplevel_close(void* data, struct xdg_toplevel* top)
 {
-    app_exit(0);
+    ctx.state = state_exit;
 }
 
 static const struct xdg_toplevel_listener xdg_toplevel_listener = {
@@ -558,9 +576,9 @@ static void handle_enter_surface(void* data, struct wl_surface* surface,
         ctx.wnd.height = (ctx.wnd.height / ctx.wnd.scale) * scale;
         ctx.wnd.scale = scale;
         if (recreate_buffers()) {
-            app_redraw();
+            ui_redraw();
         } else {
-            app_exit(1);
+            ctx.state = state_error;
         }
     }
 }
@@ -614,32 +632,12 @@ static const struct wl_registry_listener registry_listener = {
 
 #pragma GCC diagnostic pop // "-Wunused-parameter"
 
-// Key repeat handler
-static void on_key_repeat(__attribute__((unused)) void* data)
+static bool create_window(void)
 {
-    uint64_t repeats;
-    const ssize_t sz = sizeof(repeats);
-    if (read(ctx.repeat.fd, &repeats, sz) == sz) {
-        app_on_keyboard(ctx.repeat.key, keybind_mods(ctx.xkb.state));
-    }
-}
-
-// Wayland event handler
-static void on_wayland_event(__attribute__((unused)) void* data)
-{
-    wl_display_read_events(ctx.wl.display);
-    wl_display_dispatch_pending(ctx.wl.display);
-    ctx.event_handled = true;
-}
-
-bool ui_init(const char* app_id, size_t width, size_t height)
-{
-    ctx.wnd.width = width;
-    ctx.wnd.height = height;
-    if (ctx.wnd.width < WINDOW_MIN || ctx.wnd.height < WINDOW_MIN ||
-        ctx.wnd.width > WINDOW_MAX || ctx.wnd.height > WINDOW_MAX) {
-        ctx.wnd.width = WINDOW_DEFAULT_WIDTH;
-        ctx.wnd.height = WINDOW_DEFAULT_HEIGHT;
+    if (ctx.wnd.width < 10 || ctx.wnd.height < 10) {
+        // fixup window size
+        ctx.wnd.width = 640;
+        ctx.wnd.height = 480;
     }
 
     ctx.wl.display = wl_display_connect(NULL);
@@ -651,7 +649,7 @@ bool ui_init(const char* app_id, size_t width, size_t height)
     ctx.wl.registry = wl_display_get_registry(ctx.wl.display);
     if (!ctx.wl.registry) {
         fprintf(stderr, "Failed to open registry\n");
-        ui_destroy();
+        ui_free();
         return false;
     }
     wl_registry_add_listener(ctx.wl.registry, &registry_listener, NULL);
@@ -660,7 +658,7 @@ bool ui_init(const char* app_id, size_t width, size_t height)
     ctx.wl.surface = wl_compositor_create_surface(ctx.wl.compositor);
     if (!ctx.wl.surface) {
         fprintf(stderr, "Failed to create surface\n");
-        ui_destroy();
+        ui_free();
         return false;
     }
     wl_surface_add_listener(ctx.wl.surface, &wl_surface_listener, NULL);
@@ -668,29 +666,103 @@ bool ui_init(const char* app_id, size_t width, size_t height)
     ctx.xdg.surface = xdg_wm_base_get_xdg_surface(ctx.xdg.base, ctx.wl.surface);
     if (!ctx.xdg.surface) {
         fprintf(stderr, "Failed to create xdg surface\n");
-        ui_destroy();
+        ui_free();
         return false;
     }
     xdg_surface_add_listener(ctx.xdg.surface, &xdg_surface_listener, NULL);
     ctx.xdg.toplevel = xdg_surface_get_toplevel(ctx.xdg.surface);
     xdg_toplevel_add_listener(ctx.xdg.toplevel, &xdg_toplevel_listener, NULL);
-    xdg_toplevel_set_app_id(ctx.xdg.toplevel, app_id);
+    xdg_toplevel_set_app_id(ctx.xdg.toplevel, ctx.app_id);
     if (ctx.fullscreen) {
         xdg_toplevel_set_fullscreen(ctx.xdg.toplevel, NULL);
     }
 
     wl_surface_commit(ctx.wl.surface);
 
-    app_watch(wl_display_get_fd(ctx.wl.display), on_wayland_event, NULL);
-
     ctx.repeat.fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-    app_watch(ctx.repeat.fd, on_key_repeat, NULL);
 
     return true;
 }
 
-void ui_destroy(void)
+/**
+ * Custom section loader, see `config_loader` for details.
+ */
+static enum config_status load_config(const char* key, const char* value)
 {
+    enum config_status status = cfgst_invalid_value;
+
+    if (strcmp(key, UI_CFG_APP_ID) == 0) {
+        str_dup(value, &ctx.app_id);
+        status = cfgst_ok;
+    } else if (strcmp(key, UI_CFG_FULLSCREEN) == 0) {
+        if (config_to_bool(value, &ctx.fullscreen)) {
+            status = cfgst_ok;
+        }
+    } else if (strcmp(key, UI_CFG_SIZE) == 0) {
+        ssize_t width, height;
+        if (strcmp(value, "parent") == 0) {
+            ctx.wnd.width = SIZE_FROM_PARENT;
+            ctx.wnd.height = SIZE_FROM_PARENT;
+            status = cfgst_ok;
+        } else if (strcmp(value, "image") == 0) {
+            ctx.wnd.width = SIZE_FROM_IMAGE;
+            ctx.wnd.height = SIZE_FROM_IMAGE;
+            status = cfgst_ok;
+        } else {
+            struct str_slice slices[2];
+            if (str_split(value, ',', slices, 2) == 2 &&
+                str_to_num(slices[0].value, slices[0].len, &width, 0) &&
+                str_to_num(slices[1].value, slices[1].len, &height, 0) &&
+                width > 0 && width < 100000 && height > 0 && height < 100000) {
+                ctx.wnd.width = width;
+                ctx.wnd.height = height;
+                status = cfgst_ok;
+            }
+        }
+    } else if (strcmp(key, UI_CFG_POSITION) == 0) {
+        if (strcmp(value, "parent") == 0) {
+            ctx.wnd.x = POS_FROM_PARENT;
+            ctx.wnd.y = POS_FROM_PARENT;
+            status = cfgst_ok;
+        } else {
+            struct str_slice slices[2];
+            ssize_t x, y;
+            if (str_split(value, ',', slices, 2) == 2 &&
+                str_to_num(slices[0].value, slices[0].len, &x, 0) &&
+                str_to_num(slices[1].value, slices[1].len, &y, 0)) {
+                ctx.wnd.x = (ssize_t)x;
+                ctx.wnd.y = (ssize_t)y;
+                status = cfgst_ok;
+            }
+        }
+    } else {
+        status = cfgst_invalid_key;
+    }
+
+    return status;
+}
+
+void ui_init(void)
+{
+    struct timespec ts;
+
+    // create unique application id
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        char app_id[64];
+        const uint64_t timestamp = (ts.tv_sec << 31) | ts.tv_nsec;
+        snprintf(app_id, sizeof(app_id), APP_NAME "_%llx", timestamp);
+        str_dup(app_id, &ctx.app_id);
+    } else {
+        str_dup(APP_NAME, &ctx.app_id);
+    }
+
+    // register configuration loader
+    config_add_loader(GENERAL_CONFIG_SECTION, load_config);
+}
+
+void ui_free(void)
+{
+    free(ctx.app_id);
     if (ctx.repeat.fd != -1) {
         close(ctx.repeat.fd);
     }
@@ -703,8 +775,12 @@ void ui_destroy(void)
     if (ctx.xkb.context) {
         xkb_context_unref(ctx.xkb.context);
     }
-    free_buffer(ctx.wnd.buffer0);
-    free_buffer(ctx.wnd.buffer1);
+    if (ctx.wnd.buffer0) {
+        wl_buffer_destroy(ctx.wnd.buffer0);
+    }
+    if (ctx.wnd.buffer1) {
+        wl_buffer_destroy(ctx.wnd.buffer1);
+    }
     if (ctx.wl.seat) {
         wl_seat_destroy(ctx.wl.seat);
     }
@@ -713,6 +789,9 @@ void ui_destroy(void)
     }
     if (ctx.wl.pointer) {
         wl_pointer_destroy(ctx.wl.pointer);
+    }
+    if (ctx.wl.touch) {
+        wl_touch_destroy(ctx.wl.touch);
     }
     if (ctx.wl.shm) {
         wl_shm_destroy(ctx.wl.shm);
@@ -743,28 +822,88 @@ void ui_destroy(void)
     }
 }
 
-void ui_event_prepare(void)
+bool ui_run(void)
 {
-    ctx.event_handled = false;
+    const size_t num_fds = ctx.num_events + 2; // wayland + key repeat
+    const size_t idx_wayland = num_fds - 1;
+    const size_t idx_krepeat = num_fds - 2;
+    struct pollfd* fds;
 
-    while (wl_display_prepare_read(ctx.wl.display) != 0) {
-        wl_display_dispatch_pending(ctx.wl.display);
+    if (!create_window()) {
+        return false;
     }
 
-    wl_display_flush(ctx.wl.display);
-}
-
-void ui_event_done(void)
-{
-    if (!ctx.event_handled) {
-        wl_display_cancel_read(ctx.wl.display);
+    // file descriptors to poll
+    fds = calloc(1, num_fds * sizeof(struct pollfd));
+    if (!fds) {
+        fprintf(stderr, "Not enough memory\n");
+        return false;
     }
+    for (size_t i = 0; i < ctx.num_events; ++i) {
+        fds[i].fd = ctx.events[i].fd;
+        fds[i].events = POLLIN;
+    }
+    fds[idx_wayland].fd = wl_display_get_fd(ctx.wl.display);
+    fds[idx_wayland].events = POLLIN;
+    fds[idx_krepeat].fd = ctx.repeat.fd;
+    fds[idx_krepeat].events = POLLIN;
+
+    // main event loop
+    while (ctx.state == state_ok) {
+        // prepare to read wayland events
+        while (wl_display_prepare_read(ctx.wl.display) != 0) {
+            wl_display_dispatch_pending(ctx.wl.display);
+        }
+        wl_display_flush(ctx.wl.display);
+
+        // poll events
+        if (poll(fds, num_fds, -1) <= 0) {
+            wl_display_cancel_read(ctx.wl.display);
+            continue;
+        }
+
+        // read and handle wayland events
+        if (fds[idx_wayland].revents & POLLIN) {
+            wl_display_read_events(ctx.wl.display);
+            wl_display_dispatch_pending(ctx.wl.display);
+        } else {
+            wl_display_cancel_read(ctx.wl.display);
+        }
+
+        // read and handle key repeat events from timer
+        if (fds[idx_krepeat].revents & POLLIN) {
+            uint64_t repeats;
+            const ssize_t sz = sizeof(repeats);
+            if (read(ctx.repeat.fd, &repeats, sz) == sz) {
+                const uint8_t mods = keybind_mods(ctx.xkb.state);
+                viewer_on_keyboard(ctx.repeat.key, mods);
+            }
+        }
+
+        // read custom events
+        for (size_t i = 0; i < ctx.num_events; ++i) {
+            if (fds[i].revents & POLLIN) {
+                ctx.events[i].handler();
+            }
+        }
+    }
+
+    free(fds);
+
+    return ctx.state != state_error;
 }
 
-struct pixmap* ui_draw_begin(void)
+void ui_stop(void)
 {
+    ctx.state = state_exit;
+}
+
+void ui_redraw(void)
+{
+    struct pixmap wnd;
+
     if (!ctx.wnd.current) {
-        return NULL; // not yet initialized
+        return; // not yet initialized
     }
 
     // switch buffers
@@ -774,29 +913,22 @@ struct pixmap* ui_draw_begin(void)
         ctx.wnd.current = ctx.wnd.buffer0;
     }
 
-    ctx.wnd.pm.data = wl_buffer_get_user_data(ctx.wnd.current);
+    // draw to window buffer
+    wnd.width = ctx.wnd.width;
+    wnd.height = ctx.wnd.height;
+    wnd.data = wl_buffer_get_user_data(ctx.wnd.current);
+    viewer_on_redraw(&wnd);
 
-#ifdef TRACE_DRAW_TIME
-    clock_gettime(CLOCK_MONOTONIC, &ctx.wnd.draw_time);
-#endif
-
-    return &ctx.wnd.pm;
-}
-
-void ui_draw_commit(void)
-{
-#ifdef TRACE_DRAW_TIME
-    struct timespec curr;
-    clock_gettime(CLOCK_MONOTONIC, &curr);
-    const double ns = (curr.tv_sec * 1000000000 + curr.tv_nsec) -
-        (ctx.wnd.draw_time.tv_sec * 1000000000 + ctx.wnd.draw_time.tv_nsec);
-    printf("Rendered in %.6f sec\n", ns / 1000000000);
-#endif
-
+    // show window buffer
     wl_surface_attach(ctx.wl.surface, ctx.wnd.current, 0, 0);
     wl_surface_damage(ctx.wl.surface, 0, 0, ctx.wnd.width, ctx.wnd.height);
     wl_surface_set_buffer_scale(ctx.wl.surface, ctx.wnd.scale);
     wl_surface_commit(ctx.wl.surface);
+}
+
+const char* ui_get_appid(void)
+{
+    return ctx.app_id;
 }
 
 void ui_set_title(const char* name)
@@ -812,6 +944,28 @@ void ui_set_title(const char* name)
     }
 }
 
+void ui_set_position(ssize_t x, ssize_t y)
+{
+    ctx.wnd.x = x;
+    ctx.wnd.y = y;
+}
+
+ssize_t ui_get_x(void)
+{
+    return ctx.wnd.x;
+}
+
+ssize_t ui_get_y(void)
+{
+    return ctx.wnd.y;
+}
+
+void ui_set_size(size_t width, size_t height)
+{
+    ctx.wnd.width = width;
+    ctx.wnd.height = height;
+}
+
 size_t ui_get_width(void)
 {
     return ctx.wnd.width;
@@ -820,11 +974,6 @@ size_t ui_get_width(void)
 size_t ui_get_height(void)
 {
     return ctx.wnd.height;
-}
-
-size_t ui_get_scale(void)
-{
-    return ctx.wnd.scale;
 }
 
 void ui_toggle_fullscreen(void)
@@ -837,5 +986,22 @@ void ui_toggle_fullscreen(void)
         } else {
             xdg_toplevel_unset_fullscreen(ctx.xdg.toplevel);
         }
+    }
+}
+
+bool ui_get_fullscreen(void)
+{
+    return ctx.fullscreen;
+}
+
+void ui_add_event(int fd, fd_event handler)
+{
+    const size_t new_sz = (ctx.num_events + 1) * sizeof(struct custom_event);
+    struct custom_event* events = realloc(ctx.events, new_sz);
+    if (events) {
+        ctx.events = events;
+        ctx.events[ctx.num_events].fd = fd;
+        ctx.events[ctx.num_events].handler = handler;
+        ++ctx.num_events;
     }
 }

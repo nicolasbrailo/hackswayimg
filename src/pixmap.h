@@ -25,32 +25,34 @@ typedef uint32_t argb_t;
 #define ARGB_GET_B(c) (((c) >> ARGB_B_SHIFT) & 0xff)
 
 // create argb_t from channel value
-#define ARGB_SET_A(a) (((argb_t)(a) & 0xff) << ARGB_A_SHIFT)
-#define ARGB_SET_R(r) (((argb_t)(r) & 0xff) << ARGB_R_SHIFT)
-#define ARGB_SET_G(g) (((argb_t)(g) & 0xff) << ARGB_G_SHIFT)
-#define ARGB_SET_B(b) (((argb_t)(b) & 0xff) << ARGB_B_SHIFT)
-#define ARGB(a, r, g, b) \
-    (ARGB_SET_A(a) | ARGB_SET_R(r) | ARGB_SET_G(g) | ARGB_SET_B(b))
+#define ARGB_SET_A(a) (((a)&0xff) << ARGB_A_SHIFT)
+#define ARGB_SET_R(r) (((r)&0xff) << ARGB_R_SHIFT)
+#define ARGB_SET_G(g) (((g)&0xff) << ARGB_G_SHIFT)
+#define ARGB_SET_B(b) (((b)&0xff) << ARGB_B_SHIFT)
 
-// convert ABGR to ARGB
-#define ABGR_TO_ARGB(c) \
+// convert RGBA to ARGB
+#define ARGB_SET_ABGR(c) \
     ((c & 0xff00ff00) | ARGB_SET_R(ARGB_GET_B(c)) | ARGB_SET_B(ARGB_GET_R(c)))
 
-#define max(a, b) ((a) > (b) ? (a) : (b))
-#define min(a, b) ((a) < (b) ? (a) : (b))
+/** Size description. */
+struct size {
+    size_t width;
+    size_t height;
+};
+
+/** Rectangle description. */
+struct rect {
+    ssize_t x;
+    ssize_t y;
+    size_t width;
+    size_t height;
+};
 
 /** Pixel map. */
 struct pixmap {
     size_t width;  ///< Width (px)
     size_t height; ///< Height (px)
     argb_t* data;  ///< Pixel data
-};
-
-/** Scale filters. */
-enum pixmap_scale {
-    pixmap_nearest, ///< Nearest filter, poor quality but fast
-    pixmap_bicubic, ///< Bicubic filter, good quality but slow
-    pixmap_average, ///< Average color, downsampling image
 };
 
 /**
@@ -68,63 +70,13 @@ bool pixmap_create(struct pixmap* pm, size_t width, size_t height);
 void pixmap_free(struct pixmap* pm);
 
 /**
- * Fill area with specified color.
+ * Fill pixmap with specified color.
  * @param pm pixmap context
  * @param x,y start coordinates, left top point
  * @param width,height region size
  * @param color color to set
  */
-void pixmap_fill(struct pixmap* pm, ssize_t x, ssize_t y, size_t width,
-                 size_t height, argb_t color);
-
-/**
- * Fill whole pixmap except specified area.
- * @param pm pixmap context
- * @param x,y top left corner of excluded area
- * @param width,height excluded area size
- * @param color color to set
- */
-void pixmap_inverse_fill(struct pixmap* pm, ssize_t x, ssize_t y, size_t width,
-                         size_t height, argb_t color);
-
-/**
- * Blend area with specified color.
- * @param pm pixmap context
- * @param x,y start coordinates, left top point
- * @param width,height region size
- * @param color color to set
- */
-void pixmap_blend(struct pixmap* pm, ssize_t x, ssize_t y, size_t width,
-                  size_t height, argb_t color);
-
-/**
- * Draw horizontal line.
- * @param pm pixmap context
- * @param x,y start coordinates, left top point
- * @param width line size
- * @param color color to use
- */
-void pixmap_hline(struct pixmap* pm, ssize_t x, ssize_t y, size_t width,
-                  argb_t color);
-
-/**
- * Draw vertical line.
- * @param pm pixmap context
- * @param x,y start coordinates, left top point
- * @param height line size
- * @param color color to use
- */
-void pixmap_vline(struct pixmap* pm, ssize_t x, ssize_t y, size_t height,
-                  argb_t color);
-
-/**
- * Draw rectangle with 1px lines.
- * @param pm pixmap context
- * @param x,y start coordinates, left top point
- * @param width,height rectangle size
- * @param color color to use
- */
-void pixmap_rect(struct pixmap* pm, ssize_t x, ssize_t y, size_t width,
+void pixmap_fill(struct pixmap* pm, size_t x, size_t y, size_t width,
                  size_t height, argb_t color);
 
 /**
@@ -136,43 +88,55 @@ void pixmap_rect(struct pixmap* pm, ssize_t x, ssize_t y, size_t width,
  * @param color0 first grid color
  * @param color1 second grid color
  */
-void pixmap_grid(struct pixmap* pm, ssize_t x, ssize_t y, size_t width,
+void pixmap_grid(struct pixmap* pm, size_t x, size_t y, size_t width,
                  size_t height, size_t tail_sz, argb_t color0, argb_t color1);
 
 /**
  * Apply mask to pixmap: change color according alpha channel.
- * @param pm destination pixmap
+ * @param dst destination pixmap
  * @param x,y destination left top point
  * @param mask array with alpha channel mask
  * @param width,height mask size
  * @param color color to set
  */
-void pixmap_apply_mask(struct pixmap* pm, ssize_t x, ssize_t y,
+void pixmap_apply_mask(struct pixmap* dst, size_t x, size_t y,
                        const uint8_t* mask, size_t width, size_t height,
                        argb_t color);
 
 /**
- * Draw one pixmap on another.
- * @param src source pixmap
+ * Put one pixmap on another.
  * @param dst destination pixmap
- * @param x,y destination left top coordinates
- * @param alpha flag to use alpha blending
+ * @param x,y destination left top point
+ * @param src source pixmap
+ * @param width,height source pixmap area to copy
  */
-void pixmap_copy(const struct pixmap* src, struct pixmap* dst, ssize_t x,
-                 ssize_t y, bool alpha);
+void pixmap_copy(struct pixmap* dst, size_t x, size_t y,
+                 const struct pixmap* src, size_t width, size_t height);
 
 /**
- * Draw scaled pixmap.
- * @param scaler scale filter to use
- * @param src source pixmap
+ * Put one pixmap on another with alpha blending.
  * @param dst destination pixmap
- * @param x,y destination left top coordinates
- * @param scale scale of source pixmap
- * @param alpha flag to use alpha blending
+ * @param x,y destination left top point
+ * @param src source pixmap
+ * @param width,height source pixmap area to copy
  */
-void pixmap_scale(enum pixmap_scale scaler, const struct pixmap* src,
-                  struct pixmap* dst, ssize_t x, ssize_t y, float scale,
-                  bool alpha);
+void pixmap_over(struct pixmap* dst, size_t x, size_t y,
+                 const struct pixmap* src, size_t width, size_t height);
+
+/**
+ * Put one scaled pixmap on another.
+ * @param dst destination pixmap
+ * @param dst_x,dst_y destination left top point
+ * @param src source pixmap
+ * @param src_x,src_y left top point of source pixmap
+ * @param src_scale scale of source pixmap
+ * @param alpha flag to use alpha blending
+ * @param antialiasing flag to use antialiasing
+ */
+void pixmap_put(struct pixmap* dst, ssize_t dst_x, ssize_t dst_y,
+                const struct pixmap* src, ssize_t src_x, ssize_t src_y,
+                float src_scale, bool alpha, bool antialiasing);
+
 /**
  * Flip pixel map vertically.
  * @param pm pixmap context

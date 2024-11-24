@@ -2,14 +2,14 @@
 // PNM formats decoder
 // Copyright (C) 2023 Abe Wieland <abe.wieland@gmail.com>
 
-#include "../loader.h"
+#include "loader.h"
 
 #include <limits.h>
 
 // Divide a by b, rounding to the nearest integer; evaluates b twice
 #define div_near(a, b) (((a) + (b) / 2) / (b))
 // Divide a by b, rounding up; evaluates b twice
-#define div_ceil(a, b) (((a) + (b) - 1) / (b))
+#define div_ceil(a, b) (((a) + (b)-1) / (b))
 
 // PNM file types
 enum pnm_type {
@@ -30,6 +30,27 @@ struct pnm_iter {
 #define PNM_EFMT -3
 #define PNM_EOVF -4
 
+/**
+ * Return string for error conditions above
+ * @param err error code
+ * @return string representing that error code
+ */
+static const char* pnm_strerror(int err)
+{
+    switch (err) {
+        case PNM_EEOF:
+            return "unexpected end of image";
+        case PNM_ERNG:
+            return "integer too large";
+        case PNM_EFMT:
+            return "digit expected";
+        case PNM_EOVF:
+            return "pixel value above maxval";
+        default:
+            return "unknown error";
+    }
+}
+
 // Digits in INT_MAX
 #define INT_MAX_DIGITS 10
 
@@ -45,36 +66,30 @@ struct pnm_iter {
  */
 static int pnm_readint(struct pnm_iter* it, size_t digits)
 {
-    if (!digits) {
+    if (!digits)
         digits = INT_MAX_DIGITS;
-    }
     for (; it->pos != it->end; ++it->pos) {
         const char c = *it->pos;
         if (c == '#') {
-            while (it->pos != it->end && *it->pos != '\n' && *it->pos != '\r') {
+            while (it->pos != it->end && *it->pos != '\n' && *it->pos != '\r')
                 ++it->pos;
-            }
         } else if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
             break;
         }
     }
-    if (it->pos == it->end) {
+    if (it->pos == it->end)
         return PNM_EEOF;
-    }
-    if (*it->pos < '0' || *it->pos > '9') {
+    if (*it->pos < '0' || *it->pos > '9')
         return PNM_EFMT;
-    }
     int val = 0;
     size_t i = 0;
     do {
         const uint8_t d = *it->pos - '0';
-        if (val > INT_MAX / 10) {
+        if (val > INT_MAX / 10)
             return PNM_ERNG;
-        }
         val *= 10;
-        if (val > INT_MAX - d) {
+        if (val > INT_MAX - d)
             return PNM_ERNG;
-        }
         val += d;
         ++it->pos;
         ++i;
@@ -100,47 +115,36 @@ static int decode_plain(struct pixmap* pm, struct pnm_iter* it,
             argb_t pix = ARGB_SET_A(0xff);
             if (type == pnm_pbm) {
                 const int bit = pnm_readint(it, 1);
-                if (bit < 0) {
+                if (bit < 0)
                     return bit;
-                }
-                if (bit > maxval) {
+                if (bit > maxval)
                     return PNM_EOVF;
-                }
                 pix |= bit - 1;
             } else if (type == pnm_pgm) {
                 int v = pnm_readint(it, 0);
-                if (v < 0) {
+                if (v < 0)
                     return v;
-                }
-                if (v > maxval) {
+                if (v > maxval)
                     return PNM_EOVF;
-                }
-                if (maxval != UINT8_MAX) {
+                if (maxval != UINT8_MAX)
                     v = div_near(v * UINT8_MAX, maxval);
-                }
                 pix |= ARGB_SET_R(v) | ARGB_SET_G(v) | ARGB_SET_B(v);
             } else {
                 int r = pnm_readint(it, 0);
-                if (r < 0) {
+                if (r < 0)
                     return r;
-                }
-                if (r > maxval) {
+                if (r > maxval)
                     return PNM_EOVF;
-                }
                 int g = pnm_readint(it, 0);
-                if (g < 0) {
+                if (g < 0)
                     return g;
-                }
-                if (g > maxval) {
+                if (g > maxval)
                     return PNM_EOVF;
-                }
                 int b = pnm_readint(it, 0);
-                if (b < 0) {
+                if (b < 0)
                     return b;
-                }
-                if (b > maxval) {
+                if (b > maxval)
                     return PNM_EOVF;
-                }
                 if (maxval != UINT8_MAX) {
                     r = div_near(r * UINT8_MAX, maxval);
                     g = div_near(g * UINT8_MAX, maxval);
@@ -172,9 +176,8 @@ static int decode_raw(struct pixmap* pm, struct pnm_iter* it,
     size_t rowsz = type == pnm_pbm
         ? div_ceil(pm->width, 8)
         : pm->width * bpc * (type == pnm_pgm ? 1 : 3);
-    if (it->end < it->pos + pm->height * rowsz) {
+    if (it->end < it->pos + pm->height * rowsz)
         return PNM_EEOF;
-    }
     for (size_t y = 0; y < pm->height; ++y) {
         argb_t* dst = pm->data + y * pm->width;
         const uint8_t* src = it->pos + y * rowsz;
@@ -185,12 +188,10 @@ static int decode_raw(struct pixmap* pm, struct pnm_iter* it,
                 pix |= bit - 1;
             } else if (type == pnm_pgm) {
                 int v = bpc == 1 ? src[x] : src[x] << 8 | src[x + 1];
-                if (v > maxval) {
+                if (v > maxval)
                     return PNM_EOVF;
-                }
-                if (maxval != UINT8_MAX) {
+                if (maxval != UINT8_MAX)
                     v = div_near(v * UINT8_MAX, maxval);
-                }
                 pix |= ARGB_SET_R(v) | ARGB_SET_G(v) | ARGB_SET_B(v);
             } else {
                 int r, g, b;
@@ -203,9 +204,8 @@ static int decode_raw(struct pixmap* pm, struct pnm_iter* it,
                     g = src[x * 3 + 2] << 8 | src[x * 3 + 3];
                     b = src[x * 3 + 4] << 8 | src[x * 3 + 5];
                 }
-                if (r > maxval || g > maxval || b > maxval) {
+                if (r > maxval || g > maxval || b > maxval)
                     return PNM_EOVF;
-                }
                 if (maxval != UINT8_MAX) {
                     r = div_near(r * UINT8_MAX, maxval);
                     g = div_near(g * UINT8_MAX, maxval);
@@ -263,10 +263,12 @@ enum loader_status decode_pnm(struct image* ctx, const uint8_t* data,
 
     width = pnm_readint(&it, 0);
     if (width < 0) {
+        image_print_error(ctx, "%s", pnm_strerror(width));
         return ldr_fmterror;
     }
     height = pnm_readint(&it, 0);
     if (height < 0) {
+        image_print_error(ctx, "%s", pnm_strerror(height));
         return ldr_fmterror;
     }
     if (type == pnm_pbm) {
@@ -274,9 +276,11 @@ enum loader_status decode_pnm(struct image* ctx, const uint8_t* data,
     } else {
         maxval = pnm_readint(&it, 0);
         if (maxval < 0) {
+            image_print_error(ctx, "%s", pnm_strerror(maxval));
             return ldr_fmterror;
         }
         if (!maxval || maxval > UINT16_MAX) {
+            image_print_error(ctx, "invalid maxval");
             return ldr_fmterror;
         }
     }
@@ -286,6 +290,7 @@ enum loader_status decode_pnm(struct image* ctx, const uint8_t* data,
         // so we won't allow one either
         const char c = *it.pos;
         if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            image_print_error(ctx, "single whitespace character expected");
             return ldr_fmterror;
         }
         ++it.pos;
@@ -297,6 +302,7 @@ enum loader_status decode_pnm(struct image* ctx, const uint8_t* data,
     ret = plain ? decode_plain(&ctx->frames[0].pm, &it, type, maxval)
                 : decode_raw(&ctx->frames[0].pm, &it, type, maxval);
     if (ret < 0) {
+        image_print_error(ctx, "%s", pnm_strerror(ret));
         image_free_frames(ctx);
         return ldr_fmterror;
     }

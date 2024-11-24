@@ -9,13 +9,15 @@ deploytgt: hackimg
 	scp ./hackimg batman@10.0.0.146:/home/batman/picframe/hackimg
 
 
-# Use SYSROOT=/ for local build includes
-SYSROOT=/
 SYSROOT=/home/batman/src/xcomp-rpiz-env/mnt/
-
-XCOMPILE=-target arm-linux-gnueabihf \
+XCOMPILE=\
+	 -target arm-linux-gnueabihf \
 	 -mcpu=arm1176jzf-s \
 	 --sysroot $(SYSROOT)
+
+# Use SYSROOT=/ for local build includes
+#SYSROOT=/
+#XCOMPILE=
 
 CFLAGS= \
 			 $(XCOMPILE) \
@@ -46,12 +48,12 @@ CFLAGS= \
 # static linking like this seems to mess up loader, so run with /lib/ld-linux-armhf.so.3 ./hackimg
 LDFLAGS=\
 				  -L $(SYSROOT)/usr/lib/arm-linux-gnueabihf \
+					-static \
 					-Wl,--as-needed \
 					-Wl,--no-undefined \
 					-Wl,-O1 \
 					-Wl,--start-group \
 					-lrt \
-					-static \
 					-ljson-c \
 					-lwebp \
 					-lwebpdemux \
@@ -74,6 +76,7 @@ LDFLAGS=\
 					-pthread \
 					-lstdc++ \
 					-Wl,-Bdynamic \
+					-lcurl \
 					-lwayland-client \
 					-lxkbcommon \
 					-Wl,--end-group \
@@ -97,34 +100,31 @@ build/src/formats/%.o: src/formats/%.c
 	clang $(CFLAGS) $< -c -o $@
 
 hackimg: \
-		 build/src/action.o \
-		 build/src/config.o \
-		 build/src/event.o \
-		 build/src/exif.o \
-		 build/src/font.o \
-		 build/src/formats/jpeg.o \
-		 build/src/gallery.o \
-	   build/xdg-shell-protocol.o \
-     build/src/application.o \
-     build/src/fetcher.o \
+		 build/xdg-shell-protocol.o \
      build/src/formats/bmp.o \
      build/src/formats/png.o \
+     build/src/formats/jpeg.o \
      build/src/formats/pnm.o \
-     build/src/formats/qoi.o \
      build/src/formats/tga.o \
      build/src/formats/tiff.o \
      build/src/formats/webp.o \
-     build/src/image.o \
-     build/src/imagelist.o \
-     build/src/info.o \
-     build/src/keybind.o \
-     build/src/loader.o \
-     build/src/main.o \
-     build/src/memdata.o \
-     build/src/pixmap.o \
-     build/src/sway.o \
-     build/src/ui.o \
-     build/src/viewer.o
+		 build/src/formats/loader.o \
+		 build/src/canvas.o \
+		 build/src/config.o \
+		 build/src/exif.o \
+		 build/src/font.o \
+		 build/src/image.o \
+		 build/src/imagedownloader.o \
+		 build/src/imagelist.o \
+		 build/src/imageprefetcher.o \
+		 build/src/info.o \
+		 build/src/keybind.o \
+		 build/src/main.o \
+		 build/src/pixmap.o \
+		 build/src/str.o \
+		 build/src/sway.o \
+		 build/src/ui.o \
+		 build/src/viewer.o
 	clang $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 
@@ -137,6 +137,7 @@ xcompile-end:
 	./rpiz-xcompile/umount_rpy_root.sh ~/src/xcomp-rpiz-env
 
 install_sysroot_deps:
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/c/curl/libcurl4-openssl-dev_7.88.1-10+rpi1+deb12u8_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://archive.raspberrypi.com/debian/pool/main/w/wayland/libwayland-dev_1.22.0-2.1~bpo12+rpt1_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libx/libxkbcommon/libxkbcommon-dev_1.5.0-1_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libe/libexif/libexif12_0.6.24-1+b2_armhf.deb

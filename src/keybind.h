@@ -4,9 +4,6 @@
 
 #pragma once
 
-#include "action.h"
-#include "config.h"
-
 #include <xkbcommon/xkbcommon.h>
 
 // Key modifiers
@@ -19,45 +16,66 @@
 #define VKEY_SCROLL_DOWN  0x42000002
 #define VKEY_SCROLL_LEFT  0x42000003
 #define VKEY_SCROLL_RIGHT 0x42000004
-#define VKEY_MOUSE_LEFT   0x42000005
-#define VKEY_MOUSE_RIGHT  0x42000006
-#define VKEY_MOUSE_MIDDLE 0x42000007
-#define VKEY_MOUSE_SIDE   0x42000008
-#define VKEY_MOUSE_EXTRA  0x42000009
 
-/** Key binding list entry. */
-struct keybind {
-    struct list list;          ///< Links to prev/next entry
-    xkb_keysym_t key;          ///< Keyboard key
-    uint8_t mods;              ///< Key modifiers
-    struct action_seq actions; ///< Sequence of action
-    char* help;                ///< Help line with binding description
+/** Available actions. */
+enum kb_action {
+    kb_none,
+    kb_help,
+    kb_first_file,
+    kb_last_file,
+    kb_prev_dir,
+    kb_next_dir,
+    kb_prev_file,
+    kb_next_file,
+    kb_skip_file,
+    kb_prev_frame,
+    kb_next_frame,
+    kb_animation,
+    kb_slideshow,
+    kb_fullscreen,
+    kb_step_left,
+    kb_step_right,
+    kb_step_up,
+    kb_step_down,
+    kb_zoom,
+    kb_rotate_left,
+    kb_rotate_right,
+    kb_flip_vertical,
+    kb_flip_horizontal,
+    kb_reload,
+    kb_antialiasing,
+    kb_info,
+    kb_exec,
+    kb_exit,
 };
 
-/**
- * Initialize global default key binding scheme.
- * @param cfg config instance
- */
-void keybind_init(struct config* cfg);
+/** Key binding. */
+struct key_binding {
+    xkb_keysym_t key;      ///< Keyboard key
+    uint8_t mods;          ///< Key modifiers
+    enum kb_action action; ///< Action
+    char* params;          ///< Custom parameters for the action
+    char* help;            ///< Binding description
+};
+extern struct key_binding* key_bindings;
+extern size_t key_bindings_size;
 
 /**
- * Destroy global key binding scheme.
+ * Initialize default key bindings.
  */
-void keybind_destroy(void);
+void keybind_init(void);
 
 /**
- * Get head of the global binding list.
- * @return pointer to the list head
+ * Free key binding context.
  */
-struct keybind* keybind_get(void);
+void keybind_free(void);
 
 /**
- * Find binding for the key.
- * @param key keyboard key
- * @param mods key modifiers (ctrl/alt/shift)
- * @return pointer to key binding or NULL if not found
+ * Get current key modifiers state.
+ * @param state XKB handle
+ * @return active key modifiers (ctrl/alt/shift)
  */
-struct keybind* keybind_find(xkb_keysym_t key, uint8_t mods);
+uint8_t keybind_mods(struct xkb_state* state);
 
 /**
  * Get key name.
@@ -68,8 +86,9 @@ struct keybind* keybind_find(xkb_keysym_t key, uint8_t mods);
 char* keybind_name(xkb_keysym_t key, uint8_t mods);
 
 /**
- * Get current key modifiers state.
- * @param state XKB handle
- * @return active key modifiers (ctrl/alt/shift)
+ * Get key binding description.
+ * @param key keyboard key
+ * @param mods key modifiers (ctrl/alt/shift)
+ * @return pointer to the binding or NULL if not found
  */
-uint8_t keybind_mods(struct xkb_state* state);
+const struct key_binding* keybind_get(xkb_keysym_t key, uint8_t mods);

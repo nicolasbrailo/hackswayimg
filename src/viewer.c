@@ -4,75 +4,29 @@
 
 #include "viewer.h"
 
-#include "application.h"
 #include "buildcfg.h"
-#include "fetcher.h"
+#include "canvas.h"
+#include "config.h"
 #include "imagelist.h"
 #include "info.h"
 #include "keybind.h"
-#include "loader.h"
+#include "str.h"
 #include "ui.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/timerfd.h>
+#include <sys/wait.h>
 #include <unistd.h>
-
-// Background grid parameters
-#define GRID_NAME   "grid"
-#define GRID_BKGID  0x00f1f2f3
-#define GRID_STEP   10
-#define GRID_COLOR1 0xff333333
-#define GRID_COLOR2 0xff4c4c4c
-
-// Default configuration parameters
-#define CFG_WINDOW_DEF         ARGB(0, 0, 0, 0)
-#define CFG_TRANSPARENCY_DEF   GRID_NAME
-#define CFG_SCALE_DEF          "optimal"
-#define CFG_FIXED_DEF          true
-#define CFG_ANTIALIASING_DEF   false
-#define CFG_SLIDESHOW_DEF      false
-#define CFG_SLIDESHOW_TIME_DEF 3
-#define CFG_HISTORY_DEF        1
-#define CFG_PRELOAD_DEF        1
-
-// Scale thresholds
-#define MIN_SCALE 10    // pixels
-#define MAX_SCALE 100.0 // factor
-
-/** Scaling operations. */
-enum fixed_scale {
-    scale_fit_optimal, ///< Fit to window, but not more than 100%
-    scale_fit_window,  ///< Fit to window size
-    scale_fit_width,   ///< Fit width to window width
-    scale_fit_height,  ///< Fit height to window height
-    scale_fill_window, ///< Fill the window
-    scale_real_size,   ///< Real image size (100%)
-};
-
-// clang-format off
-static const char* scale_names[] = {
-    [scale_fit_optimal] = "optimal",
-    [scale_fit_window] = "fit",
-    [scale_fit_width] = "width",
-    [scale_fit_height] = "height",
-    [scale_fill_window] = "fill",
-    [scale_real_size] = "real",
-};
-// clang-format on
 
 /** Viewer context. */
 struct viewer {
-    ssize_t img_x, img_y; ///< Top left corner of the image
-    size_t frame;         ///< Index of the current frame
-    argb_t image_bkg;     ///< Image background mode/color
-    argb_t window_bkg;    ///< Window background mode/color
-    bool antialiasing;    ///< Anti-aliasing mode on/off
-    bool fixed;           ///< Fix image position
+    size_t frame; ///< Index of the current frame
 
-    enum fixed_scale scale_init; ///< Initial scale
-    float scale;                 ///< Current scale factor of the image
+    struct text_surface* help; ///< Help lines
+    size_t help_sz;            ///< Number of lines in help
 
     bool animation_enable; ///< Animation enable/disable
     int animation_fd;      ///< Animation timer
@@ -80,250 +34,82 @@ struct viewer {
     bool slideshow_enable; ///< Slideshow enable/disable
     int slideshow_fd;      ///< Slideshow timer
     size_t slideshow_time; ///< Slideshow image display time (seconds)
+
+    bool info_timedout; ///< Indicates the info blocks timedout and shouldn't be
+                        ///< displayed
+    int info_timeout_fd;      ///< Info timeout timer
+    bool info_timeout_is_rel; ///< If true, timeout_time is calculated as a
+                              ///< percent of slideshow_time
+    size_t info_timeout_time; ///< Info timeout time (seconds)
+
+    char* info_block_from_sys_cmd;
+    enum info_position info_block_from_sys_cmd_position;
 };
 
-/** Global viewer context. */
-static struct viewer ctx;
+static struct viewer ctx = { .animation_enable = true,
+                             .animation_fd = -1,
+                             .slideshow_enable = false,
+                             .slideshow_fd = -1,
+                             .slideshow_time = 3,
+                             .info_timeout_fd = -1,
+                             .info_timeout_is_rel = false,
+                             .info_timeout_time = 0,
+                             .info_timedout = false,
+                             .info_block_from_sys_cmd = NULL,
+                             .info_block_from_sys_cmd_position =
+                                 info_bottom_left };
 
-/**
- * Fix up image position.
- * @param force true to ignore current config setting
- */
-static void fixup_position(bool force)
+static void switch_help(void)
 {
-    const ssize_t wnd_width = ui_get_width();
-    const ssize_t wnd_height = ui_get_height();
-
-    const struct pixmap* img = &fetcher_current()->frames[ctx.frame].pm;
-    const ssize_t img_width = ctx.scale * img->width;
-    const ssize_t img_height = ctx.scale * img->height;
-
-    if (force || ctx.fixed) {
-        // bind to window border
-        if (ctx.img_x > 0 && ctx.img_x + img_width > wnd_width) {
-            ctx.img_x = 0;
+    if (ctx.help) {
+        for (size_t i = 0; i < ctx.help_sz; i++) {
+            free(ctx.help[i].data);
         }
-        if (ctx.img_y > 0 && ctx.img_y + img_height > wnd_height) {
-            ctx.img_y = 0;
-        }
-        if (ctx.img_x < 0 && ctx.img_x + img_width < wnd_width) {
-            ctx.img_x = wnd_width - img_width;
-        }
-        if (ctx.img_y < 0 && ctx.img_y + img_height < wnd_height) {
-            ctx.img_y = wnd_height - img_height;
-        }
-
-        // centering small image
-        if (img_width <= wnd_width) {
-            ctx.img_x = wnd_width / 2 - img_width / 2;
-        }
-        if (img_height <= wnd_height) {
-            ctx.img_y = wnd_height / 2 - img_height / 2;
-        }
-    }
-
-    // don't let canvas to be far out of window
-    if (ctx.img_x + img_width < 0) {
-        ctx.img_x = -img_width;
-    }
-    if (ctx.img_x > wnd_width) {
-        ctx.img_x = wnd_width;
-    }
-    if (ctx.img_y + img_height < 0) {
-        ctx.img_y = -img_height;
-    }
-    if (ctx.img_y > wnd_height) {
-        ctx.img_y = wnd_height;
-    }
-}
-
-/**
- * Move image (viewport).
- * @param horizontal axis along which to move (false for vertical)
- * @param positive direction (increase/decrease)
- * @param params optional move step in percents
- */
-static void move_image(bool horizontal, bool positive, const char* params)
-{
-    const ssize_t old_x = ctx.img_x;
-    const ssize_t old_y = ctx.img_y;
-    ssize_t step = 10; // in %
-
-    if (params) {
-        ssize_t val;
-        if (str_to_num(params, 0, &val, 0) && val > 0 && val <= 1000) {
-            step = val;
-        } else {
-            fprintf(stderr, "Invalid move step: \"%s\"\n", params);
-        }
-    }
-
-    if (!positive) {
-        step = -step;
-    }
-
-    if (horizontal) {
-        ctx.img_x += (ui_get_width() / 100) * step;
+        free(ctx.help);
+        ctx.help = NULL;
+        ctx.help_sz = 0;
     } else {
-        ctx.img_y += (ui_get_height() / 100) * step;
-    }
-
-    fixup_position(false);
-
-    if (ctx.img_x != old_x || ctx.img_y != old_y) {
-        app_redraw();
-    }
-}
-
-/**
- * Rotate image 90 degrees.
- * @param clockwise rotation direction
- */
-static void rotate_image(bool clockwise)
-{
-    struct image* img = fetcher_current();
-    const struct pixmap* pm = &img->frames[ctx.frame].pm;
-    const ssize_t diff = (ssize_t)pm->width - pm->height;
-    const ssize_t shift = (ctx.scale * diff) / 2;
-
-    image_rotate(img, clockwise ? 90 : 270);
-    ctx.img_x += shift;
-    ctx.img_y -= shift;
-    fixup_position(false);
-
-    app_redraw();
-}
-
-/**
- * Set fixed scale for the image.
- * @param sc scale to set
- */
-static void scale_image(enum fixed_scale sc)
-{
-    const struct image* img = fetcher_current();
-    const struct pixmap* pm = &img->frames[ctx.frame].pm;
-    const size_t wnd_width = ui_get_width();
-    const size_t wnd_height = ui_get_height();
-    const float scale_w = 1.0 / ((float)pm->width / wnd_width);
-    const float scale_h = 1.0 / ((float)pm->height / wnd_height);
-
-    switch (sc) {
-        case scale_fit_optimal:
-            ctx.scale = min(scale_w, scale_h);
-            if (ctx.scale > 1.0) {
-                ctx.scale = 1.0;
-            }
-            break;
-        case scale_fit_window:
-            ctx.scale = min(scale_w, scale_h);
-            break;
-        case scale_fit_width:
-            ctx.scale = scale_w;
-            break;
-        case scale_fit_height:
-            ctx.scale = scale_h;
-            break;
-        case scale_fill_window:
-            ctx.scale = max(scale_w, scale_h);
-            break;
-        case scale_real_size:
-            ctx.scale = 1.0; // 100 %
-            break;
-    }
-
-    // center viewport
-    ctx.img_x = wnd_width / 2 - (ctx.scale * pm->width) / 2;
-    ctx.img_y = wnd_height / 2 - (ctx.scale * pm->height) / 2;
-
-    fixup_position(true);
-    info_update(info_scale, "%.0f%%", ctx.scale * 100);
-    app_redraw();
-}
-
-/**
- * Zoom in/out.
- * @param params zoom operation
- */
-static void zoom_image(const char* params)
-{
-    ssize_t percent = 0;
-    ssize_t fixed_scale;
-
-    if (!params || !*params) {
-        return;
-    }
-
-    // check for fixed scale type
-    fixed_scale = str_index(scale_names, params, 0);
-    if (fixed_scale >= 0) {
-        scale_image(fixed_scale);
-    } else if (str_to_num(params, 0, &percent, 0) && percent != 0 &&
-               percent > -1000 && percent < 1000) {
-        // zoom in %
-        const double wnd_half_w = (double)ui_get_width() / 2;
-        const double wnd_half_h = (double)ui_get_height() / 2;
-        const float step = (ctx.scale / 100) * percent;
-        const double center_x = wnd_half_w / ctx.scale - ctx.img_x / ctx.scale;
-        const double center_y = wnd_half_h / ctx.scale - ctx.img_y / ctx.scale;
-
-        if (percent > 0) {
-            ctx.scale += step;
-            if (ctx.scale > MAX_SCALE) {
-                ctx.scale = MAX_SCALE;
-            }
-        } else {
-            const struct image* img = fetcher_current();
-            const struct pixmap* pm = &img->frames[ctx.frame].pm;
-            const float scale_w = (float)MIN_SCALE / pm->width;
-            const float scale_h = (float)MIN_SCALE / pm->height;
-            const float scale_min = max(scale_w, scale_h);
-            ctx.scale += step;
-            if (ctx.scale < scale_min) {
-                ctx.scale = scale_min;
+        ctx.help_sz = 0;
+        ctx.help = calloc(1, key_bindings_size * sizeof(struct text_surface));
+        if (ctx.help) {
+            for (size_t i = 0; i < key_bindings_size; i++) {
+                if (key_bindings[i].help) {
+                    font_render(key_bindings[i].help, &ctx.help[ctx.help_sz++]);
+                }
             }
         }
-
-        // restore center
-        ctx.img_x = wnd_half_w - center_x * ctx.scale;
-        ctx.img_y = wnd_half_h - center_y * ctx.scale;
-        fixup_position(false);
-    } else {
-        fprintf(stderr, "Invalid zoom operation: \"%s\"\n", params);
     }
-
-    info_update(info_scale, "%.0f%%", ctx.scale * 100);
-    app_redraw();
 }
 
 /**
- * Set default scale to a fixed scale value and apply it.
- * @param params fixed scale to set
+ * Switch to the next or previous frame.
+ * @param forward switch direction
+ * @return false if there is only one frame in the image
  */
-static void scale_global(const char* params)
+static bool next_frame(bool forward)
 {
-    if (params && *params) {
-        ssize_t fixed_scale = str_index(scale_names, params, 0);
+    size_t index = ctx.frame;
+    const struct image_entry entry = image_list_current();
 
-        if (fixed_scale >= 0) {
-            ctx.scale_init = fixed_scale;
-        } else {   
-            fprintf(stderr, "Invalid scale operation: \"%s\"\n", params);
-            return;
+    if (forward) {
+        if (++index >= entry.image->num_frames) {
+            index = 0;
         }
     } else {
-        // toggle to the next scale
-        ctx.scale_init++;
-        if (ctx.scale_init >= ARRAY_SIZE(scale_names)) {
-            ctx.scale_init = 0;
+        if (index-- == 0) {
+            index = entry.image->num_frames - 1;
         }
     }
+    if (index == ctx.frame) {
+        return false;
+    }
 
-    info_update(info_status, "Scale %s", scale_names[ctx.scale_init]);
-    scale_image(ctx.scale_init);
+    ctx.frame = index;
+    return true;
 }
 
 /**
- * Start/stop animation if image supports it.
+ * Start animation if image supports it.
  * @param enable state to set
  */
 static void animation_ctl(bool enable)
@@ -331,9 +117,9 @@ static void animation_ctl(bool enable)
     struct itimerspec ts = { 0 };
 
     if (enable) {
-        const struct image* img = fetcher_current();
-        const size_t duration = img->frames[ctx.frame].duration;
-        enable = (img->num_frames > 1 && duration);
+        const struct image_entry entry = image_list_current();
+        const size_t duration = entry.image->frames[ctx.frame].duration;
+        enable = (entry.image->num_frames > 1 && duration);
         if (enable) {
             ts.it_value.tv_sec = duration / 1000;
             ts.it_value.tv_nsec = (duration % 1000) * 1000000;
@@ -345,443 +131,475 @@ static void animation_ctl(bool enable)
 }
 
 /**
- * Start/stop slide show.
+ * Start slide show.
  * @param enable state to set
  */
 static void slideshow_ctl(bool enable)
 {
-    struct itimerspec ts = { 0 };
+    struct itimerspec slideshow_ts = { 0 };
 
     ctx.slideshow_enable = enable;
     if (enable) {
-        ts.it_value.tv_sec = ctx.slideshow_time;
+        slideshow_ts.it_value.tv_sec = ctx.slideshow_time;
     }
 
-    timerfd_settime(ctx.slideshow_fd, 0, &ts, NULL);
+    timerfd_settime(ctx.slideshow_fd, 0, &slideshow_ts, NULL);
 }
 
 /**
- * Reset state to defaults.
+ * Reset state after loading new file.
  */
 static void reset_state(void)
 {
-    const struct image* img = fetcher_current();
-    const size_t total_img = image_list_size();
+    const struct image_entry entry = image_list_current();
+    const struct pixmap* pm = &entry.image->frames[0].pm;
 
     ctx.frame = 0;
-    ctx.img_x = 0;
-    ctx.img_y = 0;
-    ctx.scale = 0;
-    scale_image(ctx.scale_init);
-    fixup_position(true);
-
-    ui_set_title(img->name);
+    ctx.info_timedout = false;
+    canvas_reset_image(pm->width, pm->height);
+    ui_set_title(entry.image->file_name);
     animation_ctl(true);
     slideshow_ctl(ctx.slideshow_enable);
 
-    info_reset(img);
-    if (total_img) {
-        info_update(info_index, "%zu of %zu", img->index + 1, total_img);
-    }
-
-    app_redraw();
-}
-
-/**
- * Skip current image.
- * @return true if next image was loaded
- */
-static bool skip_image(void)
-{
-    size_t index;
-    const size_t current = fetcher_current()->index;
-
-    index = image_list_skip(current);
-    while (index != IMGLIST_INVALID && !fetcher_open(index)) {
-        index = image_list_skip(index);
-    }
-
-    return (index != IMGLIST_INVALID);
-}
-
-/**
- * Switch to the next image.
- * @param direction next image position
- * @return true if next image was loaded
- */
-static bool next_image(enum action_type direction)
-{
-    size_t index = fetcher_current()->index;
-
-    do {
-        switch (direction) {
-            case action_first_file:
-                index = image_list_first();
-                // look forward in case the first file fails to load
-                direction = action_next_file;
-                break;
-            case action_last_file:
-                index = image_list_last();
-                // look backward in case the last file fails to load
-                direction = action_prev_file;
-                break;
-            case action_prev_dir:
-                index = image_list_prev_dir(index);
-                break;
-            case action_next_dir:
-                index = image_list_next_dir(index);
-                break;
-            case action_prev_file:
-                index = image_list_prev_file(index);
-                break;
-            case action_next_file:
-                index = image_list_next_file(index);
-                break;
-            default:
-                break;
+    // Set timeout for info block
+    if (ctx.info_timeout_time) {
+        struct itimerspec info_ts = { 0 };
+        if (ctx.info_timeout_is_rel) {
+            info_ts.it_value.tv_sec = ctx.slideshow_time * ctx.info_timeout_time / 100;
+        } else {
+            info_ts.it_value.tv_sec = ctx.info_timeout_time;
         }
-    } while (index != IMGLIST_INVALID && !fetcher_open(index));
+        timerfd_settime(ctx.info_timeout_fd, 0, &info_ts, NULL);
+    }
+}
 
-    if (index == IMGLIST_INVALID) {
+/**
+ * Load next file.
+ * @param jump position of the next file in list
+ * @return false if file was not loaded
+ */
+static bool next_file(enum list_jump jump)
+{
+    if (!image_list_jump(jump)) {
         return false;
     }
-
     reset_state();
-
     return true;
 }
 
 /**
- * Switch to the next or previous frame.
- * @param forward switch direction
+ * Execute system command for the current image.
+ * @param expr command expression
  */
-static void next_frame(bool forward)
+static void execute_command(const char* expr)
 {
-    size_t index = ctx.frame;
-    const struct image* img = fetcher_current();
+    const char* path = image_list_current().image->file_path;
+    char* cmd = NULL;
+    int rc = EINVAL;
 
-    if (forward) {
-        if (++index >= img->num_frames) {
-            index = 0;
+    // construct command from template
+    while (expr && *expr) {
+        if (*expr == '%') {
+            ++expr;
+            if (*expr != '%') {
+                str_append(path, 0, &cmd); // replace % with path
+                continue;
+            }
         }
+        str_append(expr, 1, &cmd);
+        ++expr;
+    }
+
+    if (cmd) {
+        rc = system(cmd); // execute
+        if (rc != -1) {
+            rc = WEXITSTATUS(rc);
+        } else {
+            rc = errno ? errno : EINVAL;
+        }
+    }
+
+    // show execution status
+    if (!cmd) {
+        info_set_status("Error: no command to execute");
     } else {
-        if (index-- == 0) {
-            index = img->num_frames - 1;
+        if (strlen(cmd) > 30) { // trim long command
+            strcpy(&cmd[27], "...");
+        }
+        if (rc) {
+            info_set_status("Error %d: %s", rc, cmd);
+        } else {
+            info_set_status("OK: %s", cmd);
         }
     }
-    if (index != ctx.frame) {
-        ctx.frame = index;
-        info_update(info_frame, "%zu of %zu", ctx.frame + 1, img->num_frames);
-        info_update(info_image_size, "%zux%zu", img->frames[ctx.frame].pm.width,
-                    img->frames[ctx.frame].pm.height);
-        app_redraw();
+
+    free(cmd);
+}
+
+/**
+ * Move viewport.
+ * @param horizontal axis along which to move (false for vertical)
+ * @param positive direction (increase/decrease)
+ * @param params optional move step in percents
+ */
+static bool move_viewport(bool horizontal, bool positive, const char* params)
+{
+    ssize_t percent = 10;
+
+    if (params) {
+        ssize_t val;
+        if (str_to_num(params, 0, &val, 0) && val > 0 && val <= 1000) {
+            percent = val;
+        } else {
+            fprintf(stderr, "Invalid move step: \"%s\"\n", params);
+        }
     }
+
+    if (!positive) {
+        percent = -percent;
+    }
+
+    return canvas_move(horizontal, percent);
 }
 
 /**
  * Animation timer event handler.
  */
-static void on_animation_timer(__attribute__((unused)) void* data)
+static void on_animation_timer(void)
 {
     next_frame(true);
     animation_ctl(true);
+    ui_redraw();
 }
 
 /**
  * Slideshow timer event handler.
  */
-static void on_slideshow_timer(__attribute__((unused)) void* data)
+static void on_slideshow_timer(void)
 {
-    slideshow_ctl(next_image(action_next_file));
+    // Set timeout for info block
+    ctx.info_timedout = false;
+    if (ctx.info_timeout_time) {
+        struct itimerspec info_ts = { 0 };
+        if (ctx.info_timeout_is_rel) {
+            info_ts.it_value.tv_sec =
+                ctx.slideshow_time * ctx.info_timeout_time / 100;
+        } else {
+            info_ts.it_value.tv_sec = ctx.info_timeout_time;
+        }
+        timerfd_settime(ctx.info_timeout_fd, 0, &info_ts, NULL);
+    }
+
+    slideshow_ctl(next_file(jump_next_file));
+    ui_redraw();
 }
 
 /**
- * Draw image.
- * @param wnd pixel map of target window
+ * Slideshow timer event handler.
  */
-static void draw_image(struct pixmap* wnd)
+static void on_info_block_timeout(void)
 {
-    const struct image* img = fetcher_current();
-    const struct pixmap* img_pm = &img->frames[ctx.frame].pm;
-    const size_t width = ctx.scale * img_pm->width;
-    const size_t height = ctx.scale * img_pm->height;
+    // Reset timer to 0, so it won't fire again
+    struct itimerspec info_ts = { 0 };
+    timerfd_settime(ctx.info_timeout_fd, 0, &info_ts, NULL);
+    ctx.info_timedout = true;
+    ui_redraw();
+}
 
-    // clear window background
-    pixmap_inverse_fill(wnd, ctx.img_x, ctx.img_y, width, height,
-                        ctx.window_bkg);
+/**
+ * Custom section loader, see `config_loader` for details.
+ */
+static enum config_status load_config(const char* key, const char* value)
+{
+    enum config_status status = cfgst_invalid_key;
 
-    // clear image background
-    if (img->alpha) {
-        if (ctx.image_bkg == GRID_BKGID) {
-            pixmap_grid(wnd, ctx.img_x, ctx.img_y, width, height,
-                        ui_get_scale() * GRID_STEP, GRID_COLOR1, GRID_COLOR2);
+    if (strcmp(key, VIEWER_CFG_SLIDESHOW) == 0) {
+        status = config_to_bool(value, &ctx.slideshow_enable)
+            ? cfgst_ok
+            : cfgst_invalid_value;
+    } else if (strcmp(key, VIEWER_CFG_SLIDESHOW_TIME) == 0) {
+        ssize_t num;
+        if (str_to_num(value, 0, &num, 0) && num != 0 && num <= 86400) {
+            ctx.slideshow_time = num;
+            status = cfgst_ok;
         } else {
-            pixmap_fill(wnd, ctx.img_x, ctx.img_y, width, height,
-                        ctx.image_bkg);
+            status = cfgst_invalid_value;
+        }
+    } else if (strcmp(key, VIEWER_CFG_INFO_TIMEOUT) == 0) {
+        size_t val_sz = strlen(value);
+        ctx.info_timeout_is_rel = false;
+        if (value[val_sz - 1] == '%') {
+            val_sz = val_sz - 1;
+            ctx.info_timeout_is_rel = true;
+        }
+
+        ssize_t num;
+        const ssize_t maxVal = ctx.info_timeout_is_rel ? 100 : 86400;
+        if (str_to_num(value, val_sz, &num, 0) && num != 0 && num <= maxVal) {
+            ctx.info_timeout_time = num;
+            status = cfgst_ok;
+        } else {
+            status = cfgst_invalid_value;
+        }
+    } else if (strcmp(key, VIEWER_DISPLAY_SYSTEM_CMD) == 0) {
+        ctx.info_block_from_sys_cmd = strdup(value);
+        status = cfgst_ok;
+    } else if (strcmp(key, VIEWER_DISPLAY_SYSTEM_CMD_POS) == 0) {
+        status = cfgst_ok;
+        if (strcmp(value, "top_left") == 0) {
+            ctx.info_block_from_sys_cmd_position = info_top_left;
+        } else if (strcmp(value, "top_right") == 0) {
+            ctx.info_block_from_sys_cmd_position = info_top_right;
+        } else if (strcmp(value, "bottom_left") == 0) {
+            ctx.info_block_from_sys_cmd_position = info_bottom_left;
+        } else if (strcmp(value, "bottom_right") == 0) {
+            ctx.info_block_from_sys_cmd_position = info_bottom_right;
+        } else {
+            status = cfgst_invalid_value;
         }
     }
 
-    // put image on window surface
-    if (ctx.scale == 1.0) {
-        pixmap_copy(img_pm, wnd, ctx.img_x, ctx.img_y, img->alpha);
-    } else {
-        enum pixmap_scale scaler;
-        if (ctx.antialiasing) {
-            scaler = (ctx.scale > 1.0) ? pixmap_bicubic : pixmap_average;
-        } else {
-            scaler = pixmap_nearest;
-        }
-        pixmap_scale(scaler, img_pm, wnd, ctx.img_x, ctx.img_y, ctx.scale,
-                     img->alpha);
-    }
+    return status;
 }
 
-/**
- * Reload image file and reset state (position, scale, etc).
- */
-static void reload(void)
+void viewer_init(void)
 {
-    const size_t index = fetcher_current()->index;
-
-    if (fetcher_reset(index, false)) {
-        if (index == fetcher_current()->index) {
-            info_update(info_status, "Image reloaded");
-        } else {
-            info_update(info_status, "Unable to update, open next file");
-        }
-        reset_state();
-    } else {
-        printf("No more images to view, exit\n");
-        app_exit(0);
-    }
-}
-
-/**
- * Redraw handler.
- */
-static void redraw(void)
-{
-    struct pixmap* window = ui_draw_begin();
-    if (window) {
-        draw_image(window);
-        info_print(window);
-        ui_draw_commit();
-    }
-}
-
-/**
- * Window resize handler.
- */
-static void on_resize(void)
-{
-    fixup_position(false);
-    reset_state();
-}
-
-/**
- * Apply action.
- * @param action pointer to the action being performed
- */
-static void apply_action(const struct action* action)
-{
-    switch (action->type) {
-        case action_first_file:
-        case action_last_file:
-        case action_prev_dir:
-        case action_next_dir:
-        case action_prev_file:
-        case action_next_file:
-            next_image(action->type);
-            break;
-        case action_skip_file:
-            if (skip_image()) {
-                reset_state();
-            } else {
-                printf("No more images, exit\n");
-                app_exit(0);
-            }
-            break;
-        case action_prev_frame:
-        case action_next_frame:
-            animation_ctl(false);
-            next_frame(action->type == action_next_frame);
-            break;
-        case action_animation:
-            animation_ctl(!ctx.animation_enable);
-            break;
-        case action_slideshow:
-            slideshow_ctl(!ctx.slideshow_enable &&
-                          next_image(action_next_file));
-            break;
-        case action_mode:
-            app_switch_mode(fetcher_current()->index);
-            break;
-        case action_step_left:
-            move_image(true, true, action->params);
-            break;
-        case action_step_right:
-            move_image(true, false, action->params);
-            break;
-        case action_step_up:
-            move_image(false, true, action->params);
-            break;
-        case action_step_down:
-            move_image(false, false, action->params);
-            break;
-        case action_zoom:
-            zoom_image(action->params);
-            break;
-        case action_scale:
-            scale_global(action->params);
-            break;
-        case action_rotate_left:
-            rotate_image(false);
-            break;
-        case action_rotate_right:
-            rotate_image(true);
-            break;
-        case action_flip_vertical:
-            image_flip_vertical(fetcher_current());
-            app_redraw();
-            break;
-        case action_flip_horizontal:
-            image_flip_horizontal(fetcher_current());
-            app_redraw();
-            break;
-        case action_antialiasing:
-            ctx.antialiasing = !ctx.antialiasing;
-            info_update(info_status, "Anti-aliasing %s",
-                        ctx.antialiasing ? "on" : "off");
-            app_redraw();
-            break;
-        case action_reload:
-            reload();
-            break;
-        case action_exec:
-            app_execute(action->params, fetcher_current()->source);
-            break;
-        default:
-            break;
-    }
-}
-
-/**
- * Image drag handler.
- * @param dx,dy delta to move viewpoint
- */
-static void on_drag(int dx, int dy)
-{
-    const ssize_t old_x = ctx.img_x;
-    const ssize_t old_y = ctx.img_y;
-
-    ctx.img_x += dx;
-    ctx.img_y += dy;
-
-    if (ctx.img_x != old_x || ctx.img_y != old_y) {
-        fixup_position(false);
-        app_redraw();
-    }
-}
-
-void viewer_init(struct config* cfg, struct image* image)
-{
-    size_t history;
-    size_t preload;
-    const char* value;
-    ssize_t index;
-
-    ctx.fixed =
-        config_get_bool(cfg, VIEWER_SECTION, VIEWER_FIXED, CFG_FIXED_DEF);
-    ctx.antialiasing = config_get_bool(cfg, VIEWER_SECTION, VIEWER_ANTIALIASING,
-                                       CFG_ANTIALIASING_DEF);
-    ctx.window_bkg =
-        config_get_color(cfg, VIEWER_SECTION, VIEWER_WINDOW, CFG_WINDOW_DEF);
-
-    // background for transparent images
-    value = config_get_string(cfg, VIEWER_SECTION, VIEWER_TRANSPARENCY,
-                              CFG_TRANSPARENCY_DEF);
-    if (strcmp(value, GRID_NAME) == 0) {
-        ctx.image_bkg = GRID_BKGID;
-    } else {
-        ctx.image_bkg = config_get_color(cfg, VIEWER_SECTION,
-                                         VIEWER_TRANSPARENCY, GRID_BKGID);
-    }
-
-    // initial scale
-    value = config_get_string(cfg, VIEWER_SECTION, VIEWER_SCALE, CFG_SCALE_DEF);
-    index = str_index(scale_names, value, 0);
-    if (index >= 0) {
-        ctx.scale_init = index;
-    } else {
-        ctx.scale_init = scale_fit_optimal;
-        config_error_val(VIEWER_SECTION, value);
-    }
-
-    // cache and preloads
-    history = config_get_num(cfg, VIEWER_SECTION, VIEWER_HISTORY, 0, 1024,
-                             CFG_HISTORY_DEF);
-    preload = config_get_num(cfg, VIEWER_SECTION, VIEWER_PRELOAD, 0, 1024,
-                             CFG_PRELOAD_DEF);
-
     // setup animation timer
-    ctx.animation_enable = true;
     ctx.animation_fd =
         timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (ctx.animation_fd != -1) {
-        app_watch(ctx.animation_fd, on_animation_timer, NULL);
+        ui_add_event(ctx.animation_fd, on_animation_timer);
     }
 
     // setup slideshow timer
-    ctx.slideshow_enable = config_get_bool(cfg, VIEWER_SECTION,
-                                           VIEWER_SLIDESHOW, CFG_SLIDESHOW_DEF);
-    ctx.slideshow_time =
-        config_get_num(cfg, VIEWER_SECTION, VIEWER_SLIDESHOW_TIME, 1, 86400,
-                       CFG_SLIDESHOW_TIME_DEF);
     ctx.slideshow_fd =
         timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (ctx.slideshow_fd != -1) {
-        app_watch(ctx.slideshow_fd, on_slideshow_timer, NULL);
+        ui_add_event(ctx.slideshow_fd, on_slideshow_timer);
     }
 
-    fetcher_init(image, history, preload);
+    // setup info block timer
+    ctx.info_timeout_fd =
+        timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (ctx.info_timeout_fd != -1) {
+        ui_add_event(ctx.info_timeout_fd, on_info_block_timeout);
+    }
+
+    // register configuration loader
+    config_add_loader(GENERAL_CONFIG_SECTION, load_config);
 }
 
-void viewer_destroy(void)
+void viewer_free(void)
 {
-    fetcher_destroy();
-
+    for (size_t i = 0; i < ctx.help_sz; i++) {
+        free(ctx.help[i].data);
+    }
     if (ctx.animation_fd != -1) {
         close(ctx.animation_fd);
     }
     if (ctx.slideshow_fd != -1) {
         close(ctx.slideshow_fd);
     }
+    if (ctx.info_timeout_fd != -1) {
+        close(ctx.info_timeout_fd);
+    }
 }
 
-void viewer_handle(const struct event* event)
+void viewer_reset(void)
 {
-    switch (event->type) {
-        case event_action:
-            apply_action(event->param.action);
+    if (image_list_reset()) {
+        reset_state();
+        info_set_status("Image reloaded");
+        ui_redraw();
+    } else {
+        printf("No more images, exit\n");
+        ui_stop();
+    }
+}
+
+void viewer_on_redraw(struct pixmap* window)
+{
+    const struct image_entry entry = image_list_current();
+
+    info_update(ctx.frame);
+
+    canvas_draw_image(window, entry.image, ctx.frame);
+
+    // put text info blocks on window surface
+    if (!ctx.info_timedout) {
+        for (size_t i = 0; i < INFO_POSITION_NUM; ++i) {
+            const size_t lines_num = info_height(i);
+            if (lines_num) {
+                const enum info_position pos = (enum info_position)i;
+                const struct info_line* lines = info_lines(pos);
+                const struct block_background* bg = info_get_background();
+                canvas_draw_text(window, pos, lines, lines_num, bg);
+            }
+        }
+    }
+
+    if (ctx.info_block_from_sys_cmd) {
+        // TODO const size_t lines_num = // TODO info_height(i); ->
+        // execute_command
+        // TODO const struct info_line* lines = // TODO info_lines(pos);
+        // TODO const struct block_background* bg = info_get_background();
+        // TODO canvas_draw_text(window, ctx.info_block_from_sys_cmd_position,
+        // lines, lines_num, bg);
+    }
+
+    if (ctx.help) {
+        canvas_draw_ctext(window, ctx.help, ctx.help_sz);
+    }
+
+    // reset one-time rendered notification message
+    info_set_status(NULL);
+}
+
+void viewer_on_resize(size_t width, size_t height, size_t scale)
+{
+    canvas_reset_window(width, height, scale);
+    reset_state();
+}
+
+void viewer_on_keyboard(xkb_keysym_t key, uint8_t mods)
+{
+    bool redraw = false;
+    const struct key_binding* kbind = keybind_get(key, mods);
+
+    if (!kbind) {
+        char* name = keybind_name(key, mods);
+        if (name) {
+            info_set_status("Key %s is not bound", name);
+            free(name);
+            ui_redraw();
+        }
+        return;
+    }
+
+    // handle action
+    switch (kbind->action) {
+        case kb_none:
             break;
-        case event_redraw:
-            redraw();
+        case kb_help:
+            switch_help();
+            redraw = true;
             break;
-        case event_resize:
-            on_resize();
+        case kb_first_file:
+            redraw = next_file(jump_first_file);
             break;
-        case event_drag:
-            on_drag(event->param.drag.dx, event->param.drag.dy);
+        case kb_last_file:
+            redraw = next_file(jump_last_file);
             break;
-        case event_activate:
-            if (fetcher_reset(event->param.activate.index, false)) {
+        case kb_prev_dir:
+            redraw = next_file(jump_prev_dir);
+            break;
+        case kb_next_dir:
+            redraw = next_file(jump_next_dir);
+            break;
+        case kb_prev_file:
+            redraw = next_file(jump_prev_file);
+            break;
+        case kb_next_file:
+            redraw = next_file(jump_next_file);
+            break;
+        case kb_skip_file:
+            if (image_list_skip()) {
                 reset_state();
+                redraw = true;
             } else {
-                app_exit(0);
+                printf("No more images, exit\n");
+                ui_stop();
             }
             break;
-        case event_load:
-            fetcher_attach(event->param.load.image, event->param.load.index);
+        case kb_prev_frame:
+        case kb_next_frame:
+            animation_ctl(false);
+            redraw = next_frame(kbind->action == kb_next_frame);
             break;
+        case kb_animation:
+            animation_ctl(!ctx.animation_enable);
+            break;
+        case kb_slideshow:
+            slideshow_ctl(!ctx.slideshow_enable && next_file(jump_next_file));
+            redraw = true;
+            break;
+        case kb_fullscreen:
+            ui_toggle_fullscreen();
+            break;
+        case kb_step_left:
+            redraw = move_viewport(true, true, kbind->params);
+            break;
+        case kb_step_right:
+            redraw = move_viewport(true, false, kbind->params);
+            break;
+        case kb_step_up:
+            redraw = move_viewport(false, true, kbind->params);
+            break;
+        case kb_step_down:
+            redraw = move_viewport(false, false, kbind->params);
+            break;
+        case kb_zoom:
+            canvas_zoom(kbind->params);
+            redraw = true;
+            break;
+        case kb_rotate_left:
+            image_rotate(image_list_current().image, 270);
+            canvas_swap_image_size();
+            redraw = true;
+            break;
+        case kb_rotate_right:
+            image_rotate(image_list_current().image, 90);
+            canvas_swap_image_size();
+            redraw = true;
+            break;
+        case kb_flip_vertical:
+            image_flip_vertical(image_list_current().image);
+            redraw = true;
+            break;
+        case kb_flip_horizontal:
+            image_flip_horizontal(image_list_current().image);
+            redraw = true;
+            break;
+        case kb_antialiasing:
+            info_set_status("Anti-aliasing %s",
+                            canvas_switch_aa() ? "on" : "off");
+            redraw = true;
+            break;
+        case kb_reload:
+            viewer_reset();
+            break;
+        case kb_info:
+            info_set_mode(kbind->params);
+            redraw = true;
+            break;
+        case kb_exec:
+            execute_command(kbind->params);
+            if (image_list_reset()) {
+                reset_state();
+                redraw = true;
+            } else {
+                printf("No more images, exit\n");
+                ui_stop();
+            }
+            break;
+        case kb_exit:
+            if (ctx.help) {
+                switch_help(); // remove help overlay
+                redraw = true;
+            } else {
+                ui_stop();
+            }
+            break;
+    }
+
+    if (redraw) {
+        ui_redraw();
+    }
+}
+
+void viewer_on_drag(int dx, int dy)
+{
+    if (canvas_drag(dx, dy)) {
+        ui_redraw();
     }
 }

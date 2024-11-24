@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Manipulating data structures: arrays, strings and lists.
+// String operations.
 // Copyright (C) 2024 Artem Senichev <artemsen@gmail.com>
 
-#include "memdata.h"
+#include "str.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -11,54 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
-
-struct list* list_add_head(struct list* head, struct list* entry)
-{
-    entry->next = head;
-    entry->prev = NULL;
-    if (head) {
-        head->prev = entry;
-    }
-    return entry;
-}
-
-struct list* list_append_tail(struct list* head, struct list* entry)
-{
-    struct list* last = NULL;
-
-    if (!head) {
-        head = entry;
-    } else {
-        last = head;
-        while (last && last->next) {
-            last = last->next;
-        }
-        last->next = entry;
-    }
-
-    entry->prev = last;
-    entry->next = NULL;
-
-    return head;
-}
-
-struct list* list_remove_entry(struct list* entry)
-{
-    struct list* prev = entry->prev;
-    struct list* next = entry->next;
-    struct list* head = prev ? prev : next;
-
-    if (prev) {
-        prev->next = next;
-    }
-    if (next) {
-        next->prev = prev;
-    }
-    while (head && head->prev) {
-        head = head->prev;
-    }
-    return head;
-}
 
 char* str_dup(const char* src, char** dst)
 {
@@ -78,16 +30,14 @@ char* str_dup(const char* src, char** dst)
 char* str_append(const char* src, size_t len, char** dst)
 {
     const size_t src_len = len ? len : strlen(src);
-    const size_t dst_len = dst && *dst ? strlen(*dst) : 0;
+    const size_t dst_len = *dst ? strlen(*dst) : 0;
     const size_t buf_len = dst_len + src_len + 1 /* last null */;
-    char* buffer = realloc(dst ? *dst : NULL, buf_len);
+    char* buffer = realloc(*dst, buf_len);
 
     if (buffer) {
         memcpy(buffer + dst_len, src, src_len);
         buffer[buf_len - 1] = 0;
-        if (dst) {
-            *dst = buffer;
-        }
+        *dst = buffer;
     }
 
     return buffer;
@@ -99,14 +49,6 @@ bool str_to_num(const char* text, size_t len, ssize_t* value, int base)
     long long num;
     char buffer[32];
     const char* ptr;
-
-    if (!text) {
-        return false;
-    }
-
-    if (!*text) {
-        return false;
-    }
 
     if (len == 0) {
         ptr = text;
@@ -128,6 +70,24 @@ bool str_to_num(const char* text, size_t len, ssize_t* value, int base)
     }
 
     return false;
+}
+
+bool str_to_bool(const char* text, size_t len, bool* value)
+{
+    if (strcmp(text, "true") == 0) {
+        *value = true;
+        return true;
+    }
+    if (strcmp(text, "false") == 0) {
+        *value = false;
+        return true;
+    }
+    ssize_t numval;
+    const bool ret = str_to_num(text, len, &numval, 10);
+    if (ret) {
+        *value = (numval != 0);
+    }
+    return ret;
 }
 
 wchar_t* str_to_wide(const char* src, wchar_t** dst)

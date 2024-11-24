@@ -2,7 +2,7 @@
 // JPEG format decoder.
 // Copyright (C) 2020 Artem Senichev <artemsen@gmail.com>
 
-#include "../loader.h"
+#include "loader.h"
 
 #include <errno.h>
 #include <setjmp.h>
@@ -25,8 +25,11 @@ struct jpg_error_manager {
 static void jpg_error_exit(j_common_ptr jpg)
 {
     struct jpg_error_manager* err = (struct jpg_error_manager*)jpg->err;
+
     char msg[JMSG_LENGTH_MAX] = { 0 };
     (*(jpg->err->format_message))(jpg, msg);
+    image_print_error(err->img, "failed to decode jpeg: %s", msg);
+
     longjmp(err->setjmp, 1);
 }
 
@@ -56,6 +59,18 @@ enum loader_status decode_jpeg(struct image* ctx, const uint8_t* data,
     jpeg_create_decompress(&jpg);
     jpeg_mem_src(&jpg, data, size);
     jpeg_read_header(&jpg, TRUE);
+
+    // TODO
+    unsigned tgt_w = 1920;
+    unsigned tgt_h = 1080;
+    while (tgt_w < jpg.image_width / jpg.scale_denom || tgt_h < jpg.image_height / jpg.scale_denom) {
+        jpg.scale_denom++;
+    }
+    if (jpg.scale_denom > 1) {
+        jpg.scale_denom--;
+    }
+    printf("XXXX Scale to s=%du %dux%du\n", jpg.scale_denom, jpg.image_width / jpg.scale_denom, jpg.image_height / jpg.scale_denom);
+
     jpeg_start_decompress(&jpg);
 #ifdef LIBJPEG_TURBO_VERSION
     jpg.out_color_space = JCS_EXT_BGRA;
@@ -76,8 +91,7 @@ enum loader_status decode_jpeg(struct image* ctx, const uint8_t* data,
             uint32_t* pixel = (uint32_t*)line;
             for (int x = jpg.output_width - 1; x >= 0; --x) {
                 const uint8_t src = *(line + x);
-                pixel[x] = ((argb_t)0xff << 24) | (argb_t)src << 16 |
-                    (argb_t)src << 8 | src;
+                pixel[x] = (0xff << 24) | src << 16 | src << 8 | src;
             }
         }
 
@@ -87,8 +101,7 @@ enum loader_status decode_jpeg(struct image* ctx, const uint8_t* data,
             uint32_t* pixel = (uint32_t*)line;
             for (int x = jpg.output_width - 1; x >= 0; --x) {
                 const uint8_t* src = line + x * 3;
-                pixel[x] = ((argb_t)0xff << 24) | (argb_t)src[0] << 16 |
-                    (argb_t)src[1] << 8 | src[2];
+                pixel[x] = (0xff << 24) | src[0] << 16 | src[1] << 8 | src[2];
             }
         }
 #endif // LIBJPEG_TURBO_VERSION
