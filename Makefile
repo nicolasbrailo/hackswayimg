@@ -20,12 +20,13 @@ XCOMPILE=\
 #XCOMPILE=
 
 CFLAGS= \
-			 $(XCOMPILE) \
+       $(XCOMPILE) \
        -I./src/ \
-			 -isystem ./build \
+       -isystem ./build \
        -isystem $(SYSROOT)/usr/include/freetype2 \
-			 -isystem $(SYSROOT)/usr/include/json-c \
+       -isystem $(SYSROOT)/usr/include/json-c \
        -Wall -Werror -Wextra -Wpedantic \
+       -Wno-strict-prototypes \
        -Wundef \
        -Wmissing-include-dirs \
        -Wpointer-arith \
@@ -37,13 +38,13 @@ CFLAGS= \
        -Wstrict-aliasing=2 \
        -Woverflow \
        -Wformat=2 \
-			 -Winvalid-pch \
+       -Winvalid-pch \
        -ggdb -O0 \
-	     -std=c99 \
+       -std=c99 \
        -fdiagnostics-color=always \
-	     -D_FILE_OFFSET_BITS=64 \
-	     -D_POSIX_C_SOURCE=200809 \
-	     -pthread \
+       -D_FILE_OFFSET_BITS=64 \
+       -D_POSIX_C_SOURCE=200809 \
+       -pthread \
 
 # static linking like this seems to mess up loader, so run with /lib/ld-linux-armhf.so.3 ./hackimg
 LDFLAGS=\
@@ -152,8 +153,8 @@ install_sysroot_deps:
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng-dev_1.6.39-2_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng-tools_1.6.39-2_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libp/libpng1.6/libpng16-16_1.6.39-2_armhf.deb
-	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff6_4.5.0-6+deb12u1_armhf.deb
-	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff-dev_4.5.0-6+deb12u1_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff6_4.5.0-6+deb12u2_armhf.deb
+	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/t/tiff/libtiff-dev_4.5.0-6+deb12u2_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/libw/libwebp/libwebp-dev_1.2.4-0.2+deb12u1_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/j/json-c/libjson-c-dev_0.16-2_armhf.deb
 	./rpiz-xcompile/add_sysroot_pkg.sh ~/src/xcomp-rpiz-env http://raspbian.raspberrypi.com/raspbian/pool/main/b/brotli/libbrotli1_1.0.9-2+b3_armhf.deb
